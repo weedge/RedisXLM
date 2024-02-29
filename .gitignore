@@ -1,0 +1,19 @@
+# Build
+#Cargo.lock
+/target
+/bin
+
+# IDE
+.vscode
+
+# data
+*.rdb
+*.idx
+
+# soft link
+redis
+
+# vim
+*~
+*.swp
+*.swo
