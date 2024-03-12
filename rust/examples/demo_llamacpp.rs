@@ -48,14 +48,7 @@ fn test_redis_info_ver(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     return Ok(response.into());
 }
 
-fn test_completions(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.log_notice(format!("{:?}", args).as_str());
-    if args.len() < 1 {
-        return Err(RedisError::WrongArity);
-    }
-    let mut args = args.into_iter().skip(1);
-    let model = args.next_str()?;
-    println!("Loading model: {}", model);
+fn start_completing_with(model: &str) -> Result<usize, RedisError> {
     let res = LlamaModel::load_from_file(model, LlamaParams::default());
     if res.is_err() {
         return Err(RedisError::String(format!("model {} load error", model)));
@@ -96,8 +89,8 @@ fn test_completions(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             break;
         }
     }
+
     /*
-    // todo: async block inference use
     // rust redis module don't support async fn to tokio select!
     let timeout_by = Instant::now() + Duration::from_secs(500);
     loop {
@@ -116,6 +109,23 @@ fn test_completions(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             }
         }
     } */
+
+    return Ok(0);
+}
+
+fn test_completions(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.log_notice(format!("{:?}", args).as_str());
+    if args.len() < 1 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let model = args.next_str()?;
+    println!("Loading model: {}", model);
+
+    let res = start_completing_with(model);
+    if res.is_err() {
+        return Err(res.err().unwrap());
+    }
 
     return Ok(format!("preload model {} ok", model).into());
 }

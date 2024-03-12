@@ -10,3 +10,9 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
+redis-module = { workspace = true }
+llama_cpp = { workspace = true }
+tokio = { workspace = true }
+rayon = { workspace = true }
+lazy_static = { workspace = true }
+num_cpus = { workspace = true }
