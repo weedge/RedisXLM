@@ -3,16 +3,115 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "6372-redisxlm-llamacpp",
+            "name": "6372-demo-llamacpp",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/redis/src/redis-server",
             "args": [
                 "--port 6372",
-                "--loadmodule  ${workspaceFolder}/target/debug/libredisxlm_llamacpp.dylib",
+                "--loadmodule  ${workspaceFolder}/target/debug/examples/libdemo_llamacpp.dylib",
                 "--dbfilename dump.6372.rdb",
                 "--loglevel debug",
                 //"--activerehashing no",
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/lib"
+                },
+            ],
+            "externalConsole": false,
+            "internalConsoleOptions": "openOnSessionStart",
+            "linux": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "/usr/bin/gdb"
+            },
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
+            }
+        },
+        {
+            "name": "6372-async-block",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/redis/src/redis-server",
+            "args": [
+                "--port 6372",
+                "--loadmodule  ${workspaceFolder}/target/debug/examples/libasync_block.dylib llm_inference_threads 1",
+                "--dbfilename dump.6372.rdb",
+                "--loglevel debug",
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/lib"
+                },
+            ],
+            "externalConsole": false,
+            "internalConsoleOptions": "openOnSessionStart",
+            "linux": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "/usr/bin/gdb"
+            },
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
+            }
+        },
+        {
+            "name": "6373-llamacpp",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/redis/src/redis-server",
+            "args": [
+                "--port 6373",
+                "--loadmodule  ${workspaceFolder}/target/debug//libllamacpp.dylib",
+                "--dbfilename dump.6373.rdb",
+                "--loglevel debug",
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/usr/local/lib"
+                },
+            ],
+            "externalConsole": false,
+            "internalConsoleOptions": "openOnSessionStart",
+            "linux": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "/usr/bin/gdb"
+            },
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
+            }
+        },
+        {
+            "name": "6370-llama.c",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/redis/src/redis-server",
+            "args": [
+                "--port 6370",
+                "--loadmodule  ${workspaceFolder}/c/llama/redisxlm_llama.so",
+                "--dbfilename dump.6370.rdb",
+                "--loglevel debug",
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

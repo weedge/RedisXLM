@@ -1,3 +1,9 @@
 [submodule "deps/readies"]
 	path = deps/readies
 	url = https://github.com/redislabsmodules/readies
+[submodule "c/deps/threadpool"]
+	path = c/deps/threadpool
+	url = https://github.com/Pithikos/C-Thread-Pool.git
+[submodule "c/deps/RedisModulesSDK"]
+	path = c/deps/RedisModulesSDK
+	url = https://github.com/RedisLabsModules/RedisModulesSDK.git

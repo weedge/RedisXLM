@@ -10,9 +10,8 @@ use redis_module::{
 };
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::Write;
 use std::sync::RwLock;
-use std::{io, thread};
+use std::thread;
 
 // https://www.sitepoint.com/rust-global-variables/
 static mut LLM_INFERENCE_POOL: Option<rayon::ThreadPool> = None;
@@ -22,6 +21,26 @@ lazy_static! {
         let m = HashMap::new();
         RwLock::new(m)
     };
+}
+
+// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
+// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
+// LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
+// LLAMACPP.CREATE_MODEL qwen1_5-7b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
+fn create_model(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    Ok(RedisValue::NoReply)
+}
+
+// LLAMACPP.CREATE_PROMPT hello_promt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
+// LLAMACPP.CREATE_PROMPT assistant_promt_tpl "<|SYSTEM|>{{system}}." "<|USER|>{{user}}" "<|ASSISTANT|>"
+// see openai prompt example: https://platform.openai.com/examples
+fn create_promt(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    Ok(RedisValue::NoReply)
+}
+
+// LLAMACPP.CREATE_INFERENCE hello_world --model qwen --promt hello_promt
+fn create_inference(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    Ok(RedisValue::NoReply)
 }
 
 fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError> {
@@ -59,7 +78,6 @@ fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError
 
     for completion in completions {
         log_debug(format!("{completion}"));
-        let _ = io::stdout().flush();
         out_put.push_str(completion.as_str());
         decoded_tokens += 1;
         if decoded_tokens > max_tokens {
@@ -70,8 +88,9 @@ fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError
     return None;
 }
 
-// todo: use preload model from init support model list
-fn llm_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+// LLAMACPP.INFERENCE_CHAT hello_world
+// LLAMACPP.INFERENCE_CHAT assistant_promt_tpl --vars '{"system": "hello", "user": "world"}'
+fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_notice(format!("llm_inference_chat args:{:?}", args).as_str());
     if args.len() < 1 {
         return Err(RedisError::WrongArity);
@@ -115,7 +134,10 @@ redis_module! {
     data_types: [],
     init: init,
     commands: [
-        ["llm_inference.chat", llm_inference_chat, "", 0, 0, 0],
+        ["llamacpp.create_model", create_model, "", 0, 0, 0],
+        ["llamacpp.create_prompt", create_promt, "", 0, 0, 0],
+        ["llamacpp.create_inference", create_inference, "", 0, 0, 0],
+        ["llamacpp.inference_chat", inference_chat, "", 0, 0, 0],
     ],
 }
 
