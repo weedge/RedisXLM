@@ -1,3 +1,6 @@
+// defualt from redis 5.0.0 redismodule.h
+// todo: make use defined params from cmake eg:
+// -DRM_INCLUDE_DIR=./redis/src
 #ifndef REDISMODULE_H
 #define REDISMODULE_H
 

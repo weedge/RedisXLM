@@ -1,4 +1,4 @@
-/* slots migrate module -- batch dump rdb obj entries to migrate slots
+/* redisxlm_llama module -- redis x llama inference
  *
  * -----------------------------------------------------------------------------
  *
@@ -58,8 +58,6 @@ RedisModule_OnLoad(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
         printf("redisxlmLlamaInit fail! \n");
         return REDISMODULE_ERR;
     }
-
-    // CREATE_WRMCMD("slotstest", SlotsDispatchRedisCommand, 0, 0, 0);
 
     return REDISMODULE_OK;
 }
