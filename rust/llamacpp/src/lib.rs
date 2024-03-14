@@ -23,6 +23,8 @@ lazy_static! {
     };
 }
 
+// like google https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models defined models
+// if tuned,pretrained model, just use https://cloud.google.com/vertex-ai/docs/start/explore-models
 // LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
 // LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
 // LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'

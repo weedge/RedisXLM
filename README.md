@@ -7,7 +7,7 @@
 
 - Preload model types：
    1. embedding model
-   2. inference model
+   2. generation(inference) model
 
 - Third-party open source libraries used:
   1. https://github.com/karpathy/llama2.c (simple, inference Llama 2 in one file of pure C) 

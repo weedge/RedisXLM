@@ -135,5 +135,33 @@
                 "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
             }
         },
+        {
+            "name": "7370-redisxlm-gemma",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/redis/src/redis-server",
+            "args": [
+                "--port 6370",
+                "--loadmodule  ${workspaceFolder}/c++/build/libredisxlm.dylib",
+                "--dbfilename dump.6370.rdb",
+                "--loglevel debug",
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "internalConsoleOptions": "openOnSessionStart",
+            "linux": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "/usr/bin/gdb"
+            },
+            "osx": {
+                "MIMode": "lldb"
+            },
+            "windows": {
+                "MIMode": "gdb",
+                "miDebuggerPath": "C:\\MinGw\\bin\\gdb.exe"
+            }
+        },
     ]
 }
