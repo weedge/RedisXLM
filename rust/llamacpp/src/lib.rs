@@ -39,6 +39,7 @@ fn create_promt(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 // LLAMACPP.CREATE_INFERENCE hello_world --model qwen --promt hello_promt
+// LLAMACPP.CREATE_INFERENCE assistant_tpl --model qwen --promt assistant_promt_tpl
 fn create_inference(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
@@ -89,7 +90,7 @@ fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError
 }
 
 // LLAMACPP.INFERENCE_CHAT hello_world
-// LLAMACPP.INFERENCE_CHAT assistant_promt_tpl --vars '{"system": "hello", "user": "world"}'
+// LLAMACPP.INFERENCE_CHAT assistant_tpl --vars '{"system": "hello", "user": "world"}'
 fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_notice(format!("llm_inference_chat args:{:?}", args).as_str());
     if args.len() < 1 {

@@ -1,3 +1,9 @@
+# note: if Undefined symbols: ___truncsfbf2 when building on macOS use llvm clang
+# u can see this issue: https://github.com/JuliaLang/julia/issues/52067;
+# llvm project fix this issue: https://github.com/llvm/llvm-project/pull/84192, after merged, need upgrade 
+# use Command Line Tools for Xcode compiler clang++
+# -DCMAKE_CXX_COMPILER=/Library/Developer/CommandLineTools/usr/bin/clang++
+# downlaod from https://developer.apple.com/download/all/?q=Command%20Line%20Tools%20for%20Xcode
 cmake_minimum_required(VERSION 3.1)
 
 # Set project
@@ -30,10 +36,20 @@ find_package(CURL REQUIRED)
 include(FetchContent)
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c)
 FetchContent_MakeAvailable(sentencepiece)
-FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp GIT_TAG origin/main)
-FetchContent_MakeAvailable(gemma)
 FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG da250571a45826b21eebbddc1e50d0c1137dee5f)
 FetchContent_MakeAvailable(highway)
+# Gemma Allow for both local and remote building)
+option(BUILD_MODE "'local' or 'remote' git fetch for builds")
+if (NOT BUILD_MODE)
+  set(BUILD_MODE "remote")
+endif()
+if (BUILD_MODE STREQUAL "local")
+  # Relative path to gemma.cpp from c++/build/
+  FetchContent_Declare(gemma SOURCE_DIR ../deps/gemma) 
+else()
+  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 0221956b2e4fb5ec65d3685fad09f257cf5700e7)
+endif()
+FetchContent_MakeAvailable(gemma)
 
 # Set shared lib
 set(SHARED_LIB shared)
@@ -48,17 +64,12 @@ target_include_directories(${SHARED_LIB} PUBLIC
         $<BUILD_INTERFACE:${OPENSSL_INCLUDE_DIR}>
         $<BUILD_INTERFACE:${CURL_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:include>)
+# link libgemma hwy sp
+target_link_libraries(${SHARED_LIB} PUBLIC libgemma hwy hwy_contrib sentencepiece)
 target_link_libraries(${SHARED_LIB} PUBLIC ${OPENSSL_LIBRARIES})
 target_link_libraries(${SHARED_LIB} PUBLIC ${CURL_LIBRARIES})
-# link libgemma 
-target_link_libraries(${SHARED_LIB} PUBLIC libgemma hwy hwy_contrib sentencepiece)
-FetchContent_GetProperties(gemma)
-FetchContent_GetProperties(sentencepiece)
 target_include_directories(${SHARED_LIB} PRIVATE ${gemma_SOURCE_DIR})
 target_include_directories(${SHARED_LIB} PRIVATE ${sentencepiece_SOURCE_DIR})
-if(APPLE)
-    target_link_libraries(${SHARED_LIB} PUBLIC "-framework AppKit -framework Security")
-endif()
 set_target_properties(${SHARED_LIB} PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
 set_target_properties(${SHARED_LIB} PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 
