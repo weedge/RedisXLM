@@ -43,7 +43,7 @@ fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
 
     let mut args = args.into_iter().skip(1);
-    let name = format!("{}.{}", PREFIX, args.next_str()?);
+    let name = format!("{}.m.{}", PREFIX, args.next_str()?);
     let model_name = ctx.create_string(name.clone());
 
     if args.next_string()?.to_lowercase() != "--opts" {
@@ -58,7 +58,7 @@ fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         Some(_) => {
             return Err(RedisError::String(format!(
                 "Model: {} already exists",
-                &model_name
+                name
             )));
         }
         None => {
@@ -78,10 +78,7 @@ fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             params.vocab_only = model_opts.model_params.vocab_only;
             let res = LlamaModel::load_from_file(model_opts.clone().model_path, params);
             if res.is_err() {
-                return Err(RedisError::String(format!(
-                    "model {} load error",
-                    model_name
-                )));
+                return Err(RedisError::String(format!("model {} load error", name)));
             }
             let _model = res.unwrap();
 
@@ -100,17 +97,79 @@ fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok("OK".into())
 }
 
-// LLAMACPP.CREATE_PROMPT hello_promt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
-// LLAMACPP.CREATE_PROMPT assistant_promt_tpl "<|SYSTEM|>{{system}}." "<|USER|>{{user}}" "<|ASSISTANT|>"
+// LLAMACPP.CREATE_PROMPT hello_prompt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
+// LLAMACPP.CREATE_PROMPT assistant_prompt_tpl "<|SYSTEM|>{{system}}." "<|USER|>{{user}}" "<|ASSISTANT|>"
 // see openai prompt example: https://platform.openai.com/examples
-fn create_promt(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    Ok(RedisValue::NoReply)
+fn create_prompt(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.auto_memory();
+    if args.len() < 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let prompt_name = ctx.create_string(name.clone());
+
+    let key = ctx.open_key_writable(&prompt_name);
+    match key.get_value::<ModelRedis>(&LLAMACPP_PROMPT_REDIS_TYPE)? {
+        Some(_) => {
+            return Err(RedisError::String(format!(
+                "prompt: {} already exists",
+                name
+            )));
+        }
+        None => {
+            let mut prompts = Vec::new();
+            while let Ok(p) = args.next_string() {
+                prompts.push(p);
+            }
+            let mut redis_prompt = PromptRedis::default();
+            redis_prompt.name = name;
+            redis_prompt.prompts = prompts;
+            // set index redisType value
+            ctx.log_debug(format!("create LlamaCPP Prompt {:?}", redis_prompt).as_str());
+            key.set_value::<PromptRedis>(&LLAMACPP_PROMPT_REDIS_TYPE, redis_prompt.into())?;
+        }
+    }
+
+    Ok("OK".into())
 }
 
-// LLAMACPP.CREATE_INFERENCE hello_world --model qwen --promt hello_promt
-// LLAMACPP.CREATE_INFERENCE assistant_tpl --model qwen --promt assistant_promt_tpl
-fn create_inference(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    Ok(RedisValue::NoReply)
+// LLAMACPP.CREATE_INFERENCE hello_world_infer --model qwen1_5-0_5b-chat-q8_0.gguf --prompt hello_prompt
+// LLAMACPP.CREATE_INFERENCE assistant_tpl_infer --model qwen1_5-0_5b-chat-q8_0.gguf --prompt assistant_prompt_tpl
+fn create_inference(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.auto_memory();
+    if args.len() < 6 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let model_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let prompt_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let inference_name = ctx.create_string(name.clone());
+
+    let key = ctx.open_key_writable(&inference_name);
+    match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
+        Some(_) => {
+            return Err(RedisError::String(format!(
+                "prompt: {} already exists",
+                name
+            )));
+        }
+        None => {
+            let mut redis_inference = InferenceRedis::default();
+            redis_inference.name = name;
+            redis_inference.model_name = model_name;
+            redis_inference.prompt_name = prompt_name;
+            // set index redisType value
+            ctx.log_debug(format!("create LlamaCPP Inference {:?}", redis_inference).as_str());
+            key.set_value::<InferenceRedis>(
+                &LLAMACPP_INFERENCE_REDIS_TYPE,
+                redis_inference.into(),
+            )?;
+        }
+    }
+
+    Ok("OK".into())
 }
 
 fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError> {
@@ -159,10 +218,40 @@ fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError
 }
 
 // LLAMACPP.INFERENCE_CHAT hello_world
+// LLAMACPP.INFERENCE_CHAT hello_world --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
 // LLAMACPP.INFERENCE_CHAT assistant_tpl --vars '{"system": "hello", "user": "world"}'
+// LLAMACPP.INFERENCE_CHAT assistant_tpl --vars '{"system": "hello", "user": "world"}' --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
+/*
+ --top-k N             top-k sampling (default: 40, 0 = disabled)
+ --top-p N             top-p sampling (default: 0.9, 1.0 = disabled)
+ --min-p N             min-p sampling (default: 0.1, 0.0 = disabled)
+ --temp N              temperature (default: 0.8)
+*/
 fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.log_notice(format!("llm_inference_chat args:{:?}", args).as_str());
-    if args.len() < 1 {
+    ctx.auto_memory();
+    if args.len() < 2 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let inference_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let redis_inference_name = ctx.create_string(inference_name.clone());
+    let key = ctx.open_key_writable(&redis_inference_name);
+    match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
+        None => {
+            return Err(RedisError::String(format!(
+                "inference: {} does not exists",
+                inference_name
+            )));
+        }
+        Some(_) => {}
+    }
+
+    Ok(RedisValue::NoReply)
+}
+
+fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.log_debug(format!("llm_inference_chat_test args:{:?}", args).as_str());
+    if args.len() < 2 {
         return Err(RedisError::WrongArity);
     }
     let mut args = args.into_iter().skip(1);
@@ -201,13 +290,14 @@ redis_module! {
     name: "redisxlm-llamacpp",
     version: 1,
     allocator: (redis_module::alloc::RedisAlloc, redis_module::alloc::RedisAlloc),
-    data_types: [],
+    data_types: [LLAMACPP_MODEL_REDIS_TYPE,LLAMACPP_PROMPT_REDIS_TYPE,LLAMACPP_INFERENCE_REDIS_TYPE],
     init: init,
     commands: [
         [format!("{}.create_model", PREFIX), create_model, "", 0, 0, 0],
-        [format!("{}.create_prompt", PREFIX), create_promt, "", 0, 0, 0],
+        [format!("{}.create_prompt", PREFIX), create_prompt, "", 0, 0, 0],
         [format!("{}.create_inference", PREFIX), create_inference, "", 0, 0, 0],
         [format!("{}.inference_chat", PREFIX), inference_chat, "", 0, 0, 0],
+        [format!("{}.inference_chat_test", PREFIX), inference_chat_test, "", 0, 0, 0],
     ],
 }
 

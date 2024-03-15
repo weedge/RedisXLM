@@ -1,5 +1,8 @@
 [![licence](https://img.shields.io/github/license/weedge/redisxlm.svg)](https://github.com/weedge/redisxlm/blob/main/LICENSE)
 
+> [!NOTE]
+> redis embedded language model, available for stand-alone version only
+
 ## RedisXLM
 - use rust/c/c++ impl redisxlm modules  
 

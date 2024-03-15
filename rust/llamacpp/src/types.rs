@@ -6,7 +6,7 @@ use std::os::raw::{c_int, c_void};
 use std::{env, fmt, path::Path, sync::Arc};
 use std::{mem, ptr};
 
-static MODEL_VERSION: i32 = 0;
+static APP_VERSION: i32 = 0;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "snake_case")]
@@ -114,7 +114,6 @@ pub struct ModelRedis {
     pub model_opts: ModelOpts,          // model options
     pub model: Option<Arc<LlamaModel>>, // llamacpp model instance
 }
-
 impl fmt::Debug for ModelRedis {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -127,7 +126,6 @@ impl fmt::Debug for ModelRedis {
         )
     }
 }
-
 impl From<ModelRedis> for RedisValue {
     fn from(model: ModelRedis) -> Self {
         let mut reply: Vec<RedisValue> = Vec::new();
@@ -142,7 +140,7 @@ impl From<ModelRedis> for RedisValue {
 // note: Redis requires the length of native type names to be exactly 9 characters
 pub static LLAMACPP_MODEL_REDIS_TYPE: RedisType = RedisType::new(
     "lm_modelx",
-    MODEL_VERSION,
+    APP_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
         rdb_load: Some(load_model),
@@ -192,8 +190,8 @@ unsafe extern "C" fn free_model(value: *mut c_void) {
 }
 
 unsafe extern "C" fn mem_usage_model(_value: *const c_void) -> usize {
-    //let m = Box::from_raw(_value as *mut ModelRedis);
-    mem::size_of::<ModelRedis>() + mem::size_of::<LlamaModel>()
+    let m = Box::from_raw(_value as *mut ModelRedis);
+    mem::size_of::<ModelRedis>() + mem::size_of::<LlamaModel>() + m.name.len() as usize
 }
 
 unsafe extern "C" fn copy_model(
@@ -202,6 +200,200 @@ unsafe extern "C" fn copy_model(
     value: *const c_void,
 ) -> *mut c_void {
     let m = unsafe { &*value.cast::<ModelRedis>() };
+    let value = m.clone();
+    Box::into_raw(Box::new(value)).cast::<c_void>()
+}
+
+#[derive(Default, Clone)]
+pub struct PromptRedis {
+    pub name: String,         // prompt name
+    pub prompts: Vec<String>, // prompts
+}
+impl fmt::Debug for PromptRedis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "name: {}, \
+            prompts: {:?}, \
+            ",
+            self.name, self.prompts
+        )
+    }
+}
+impl From<PromptRedis> for RedisValue {
+    fn from(prompt: PromptRedis) -> Self {
+        let mut reply: Vec<RedisValue> = Vec::new();
+        reply.push("name".into());
+        reply.push(prompt.name.into());
+        reply.push("prompts".into());
+        reply.push(prompt.prompts.into());
+        reply.into()
+    }
+}
+
+pub static LLAMACPP_PROMPT_REDIS_TYPE: RedisType = RedisType::new(
+    "lm_promptx",
+    APP_VERSION,
+    raw::RedisModuleTypeMethods {
+        version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
+        rdb_load: Some(load_prompt),
+        rdb_save: Some(save_prompt),
+        aof_rewrite: None,
+        free: Some(free_prompt),
+
+        // Currently unused by Redis
+        mem_usage: Some(mem_usage_prompt),
+        digest: None,
+
+        // Aux data
+        aux_load: None,
+        aux_save: None,
+        aux_save2: None,
+        aux_save_triggers: 0,
+
+        copy: Some(copy_prompt),
+        free_effort: None,
+        unlink: None,
+        defrag: None,
+
+        copy2: None,
+        free_effort2: None,
+        mem_usage2: None,
+        unlink2: None,
+    },
+);
+
+unsafe extern "C" fn save_prompt(_rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
+    let _m = unsafe { &*value.cast::<PromptRedis>() };
+}
+
+unsafe extern "C" fn load_prompt(_rdb: *mut raw::RedisModuleIO, encver: c_int) -> *mut c_void {
+    match encver {
+        //0 => {}
+        _ => ptr::null_mut() as *mut c_void,
+    }
+}
+
+unsafe extern "C" fn free_prompt(value: *mut c_void) {
+    if value.is_null() {
+        // on Redis 6.0 we might get a NULL value here, so we need to handle it.
+        return;
+    }
+    drop(Box::from_raw(value as *mut PromptRedis));
+}
+
+unsafe extern "C" fn mem_usage_prompt(_value: *const c_void) -> usize {
+    let m = Box::from_raw(_value as *mut PromptRedis);
+    let mut ps = 0;
+    for p in m.prompts {
+        ps += p.len() as usize;
+    }
+    m.name.len() as usize + ps
+}
+
+unsafe extern "C" fn copy_prompt(
+    _: *mut raw::RedisModuleString,
+    _: *mut raw::RedisModuleString,
+    value: *const c_void,
+) -> *mut c_void {
+    let m = unsafe { &*value.cast::<PromptRedis>() };
+    let value = m.clone();
+    Box::into_raw(Box::new(value)).cast::<c_void>()
+}
+
+#[derive(Default, Clone)]
+pub struct InferenceRedis {
+    pub name: String,        // inference name
+    pub model_name: String,  // model name
+    pub prompt_name: String, // prompt name
+}
+impl fmt::Debug for InferenceRedis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "name: {}, \
+            model_name: {}, \
+            prompt_name: {}, \
+            ",
+            self.name, self.model_name, self.prompt_name,
+        )
+    }
+}
+impl From<InferenceRedis> for RedisValue {
+    fn from(inference: InferenceRedis) -> Self {
+        let mut reply: Vec<RedisValue> = Vec::new();
+        reply.push("name".into());
+        reply.push(inference.name.into());
+        reply.push("model_name".into());
+        reply.push(inference.model_name.into());
+        reply.push("prompt_name".into());
+        reply.push(inference.prompt_name.into());
+        reply.into()
+    }
+}
+
+pub static LLAMACPP_INFERENCE_REDIS_TYPE: RedisType = RedisType::new(
+    "lm_promptx",
+    APP_VERSION,
+    raw::RedisModuleTypeMethods {
+        version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
+        rdb_load: Some(load_inference),
+        rdb_save: Some(save_inference),
+        aof_rewrite: None,
+        free: Some(free_inference),
+
+        // Currently unused by Redis
+        mem_usage: Some(mem_usage_inference),
+        digest: None,
+
+        // Aux data
+        aux_load: None,
+        aux_save: None,
+        aux_save2: None,
+        aux_save_triggers: 0,
+
+        copy: Some(copy_inference),
+        free_effort: None,
+        unlink: None,
+        defrag: None,
+
+        copy2: None,
+        free_effort2: None,
+        mem_usage2: None,
+        unlink2: None,
+    },
+);
+
+unsafe extern "C" fn save_inference(_rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
+    let _m = unsafe { &*value.cast::<InferenceRedis>() };
+}
+
+unsafe extern "C" fn load_inference(_rdb: *mut raw::RedisModuleIO, encver: c_int) -> *mut c_void {
+    match encver {
+        //0 => {}
+        _ => ptr::null_mut() as *mut c_void,
+    }
+}
+
+unsafe extern "C" fn free_inference(value: *mut c_void) {
+    if value.is_null() {
+        // on Redis 6.0 we might get a NULL value here, so we need to handle it.
+        return;
+    }
+    drop(Box::from_raw(value as *mut InferenceRedis));
+}
+
+unsafe extern "C" fn mem_usage_inference(_value: *const c_void) -> usize {
+    let m = Box::from_raw(_value as *mut InferenceRedis);
+    m.name.len() as usize + m.model_name.len() as usize + m.prompt_name.len() as usize
+}
+
+unsafe extern "C" fn copy_inference(
+    _: *mut raw::RedisModuleString,
+    _: *mut raw::RedisModuleString,
+    value: *const c_void,
+) -> *mut c_void {
+    let m = unsafe { &*value.cast::<InferenceRedis>() };
     let value = m.clone();
     Box::into_raw(Box::new(value)).cast::<c_void>()
 }
