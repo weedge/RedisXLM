@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use llama_cpp::standard_sampler::StandardSampler;
-use llama_cpp::{LlamaModel, LlamaParams, SessionParams};
+use llama_cpp::{LlamaModel, LlamaParams, SessionParams, SplitMode};
 use num_cpus;
 use rayon;
 use redis_module::logging::log_debug;
@@ -8,10 +8,17 @@ use redis_module::{
     redis_module, Context, NextArg, RedisError, RedisResult, RedisString, RedisValue, Status,
     ThreadSafeContext,
 };
+use serde_json;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::thread;
+
+//#[allow(dead_code, unused_variables, unused_mut)]
+mod types;
+use types::*;
+
+static PREFIX: &str = "llamacpp";
 
 // https://www.sitepoint.com/rust-global-variables/
 static mut LLM_INFERENCE_POOL: Option<rayon::ThreadPool> = None;
@@ -25,12 +32,72 @@ lazy_static! {
 
 // like google https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models defined models
 // if tuned,pretrained model, just use https://cloud.google.com/vertex-ai/docs/start/explore-models
-// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
-// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
-// LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
-// LLAMACPP.CREATE_MODEL qwen1_5-7b-chat-q8_0.gguf --TYPE local_inference_llm --PARAMS '{"model_path" : "$MODEL_PATH"}'
-fn create_model(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    Ok(RedisValue::NoReply)
+// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm","model_params":{}}'
+// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
+// LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
+// LLAMACPP.CREATE_MODEL qwen1_5-7b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
+fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.auto_memory();
+    if args.len() < 4 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let mut args = args.into_iter().skip(1);
+    let name = format!("{}.{}", PREFIX, args.next_str()?);
+    let model_name = ctx.create_string(name.clone());
+
+    if args.next_string()?.to_lowercase() != "--opts" {
+        return Err(RedisError::WrongArity);
+    }
+    let model_opts_json_str = args.next_str()?;
+    let model_opts: ModelOpts = serde_json::from_str(&model_opts_json_str)?;
+
+    // get model redisType value
+    let key = ctx.open_key_writable(&model_name);
+    match key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE)? {
+        Some(_) => {
+            return Err(RedisError::String(format!(
+                "Model: {} already exists",
+                &model_name
+            )));
+        }
+        None => {
+            // create llama model
+            let mut params = LlamaParams::default();
+            if model_opts.model_params.n_gpu_layers > 0 {
+                params.n_gpu_layers = model_opts.model_params.n_gpu_layers;
+            }
+            if model_opts.model_params.split_mode == "layer" {
+                params.split_mode = SplitMode::Layer;
+            } else if model_opts.model_params.split_mode == "row" {
+                params.split_mode = SplitMode::Row;
+            }
+            params.main_gpu = model_opts.model_params.main_gpu;
+            params.use_mlock = model_opts.model_params.use_mlock;
+            params.use_mmap = model_opts.model_params.use_mmap;
+            params.vocab_only = model_opts.model_params.vocab_only;
+            let res = LlamaModel::load_from_file(model_opts.clone().model_path, params);
+            if res.is_err() {
+                return Err(RedisError::String(format!(
+                    "model {} load error",
+                    model_name
+                )));
+            }
+            let _model = res.unwrap();
+
+            // create model redis type
+            let mut redis_model = ModelRedis::default();
+            redis_model.name = name;
+            redis_model.model_opts = model_opts;
+            redis_model.model = Some(Arc::new(_model));
+
+            // set index redisType value
+            ctx.log_debug(format!("create LlamaCPP Model {:?}", redis_model).as_str());
+            key.set_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE, redis_model.into())?;
+        }
+    }
+
+    Ok("OK".into())
 }
 
 // LLAMACPP.CREATE_PROMPT hello_promt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
@@ -137,10 +204,10 @@ redis_module! {
     data_types: [],
     init: init,
     commands: [
-        ["llamacpp.create_model", create_model, "", 0, 0, 0],
-        ["llamacpp.create_prompt", create_promt, "", 0, 0, 0],
-        ["llamacpp.create_inference", create_inference, "", 0, 0, 0],
-        ["llamacpp.inference_chat", inference_chat, "", 0, 0, 0],
+        [format!("{}.create_model", PREFIX), create_model, "", 0, 0, 0],
+        [format!("{}.create_prompt", PREFIX), create_promt, "", 0, 0, 0],
+        [format!("{}.create_inference", PREFIX), create_inference, "", 0, 0, 0],
+        [format!("{}.inference_chat", PREFIX), inference_chat, "", 0, 0, 0],
     ],
 }
 

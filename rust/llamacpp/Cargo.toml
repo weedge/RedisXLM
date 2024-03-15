@@ -12,7 +12,10 @@ path = "src/lib.rs"
 [dependencies]
 redis-module = { workspace = true }
 llama_cpp = { workspace = true }
+llama_cpp_sys = { workspace = true }
 tokio = { workspace = true }
 rayon = { workspace = true }
 lazy_static = { workspace = true }
 num_cpus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
