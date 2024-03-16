@@ -83,8 +83,7 @@ impl Default for ModelParams {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(rename_all = "snake_case")]
-#[serde(default)]
+#[serde(rename_all = "snake_case", default)]
 pub struct ModelOpts {
     #[serde(default)]
     pub model_path: String,
@@ -134,6 +133,96 @@ impl From<ModelRedis> for RedisValue {
         reply.push("model_opts".into());
         reply.push(serde_json::to_string(&model.model_opts).unwrap().into());
         reply.into()
+    }
+}
+
+#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Clone)]
+#[serde(rename_all = "snake_case", default)]
+pub struct SampleParams {
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+
+    #[serde(default = "default_top_k")]
+    pub top_k: i32,
+
+    #[serde(default = "default_top_p")]
+    pub top_p: f32,
+
+    #[serde(default = "default_min_p")]
+    pub min_p: f32,
+
+    #[serde(default = "default_min_keep")]
+    pub min_keep: usize,
+
+    // token_selector: softmax, gready
+    // TODO:
+    /// [Mirostat](https://arxiv.org/pdf/2007.14966.pdf).
+    /// [Mirostat V2](https://arxiv.org/pdf/2007.14966.pdf).
+    #[serde(default = "default_token_selector")]
+    pub token_selector: String,
+
+    // LLMs are typically used to predict the next word in a sequence. Let's generate some tokens!
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+
+    #[serde(default)]
+    pub repetition_penalty: RepetitionPenalty,
+}
+fn default_temperature() -> f32 {
+    0.8
+}
+fn default_top_k() -> i32 {
+    40
+}
+fn default_top_p() -> f32 {
+    0.95
+}
+fn default_min_p() -> f32 {
+    0.05
+}
+fn default_min_keep() -> usize {
+    1
+}
+fn default_token_selector() -> String {
+    "softmax".to_string()
+}
+fn default_max_tokens() -> usize {
+    2048
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+/// Penalizes generating a token that is within the `last_n` tokens of context in various ways.
+pub struct RepetitionPenalty {
+    /// Divide the token's logit by this value if they appear one or more time in the `last_n`
+    /// tokens. 1.0 disables this, and values from 1.0-1.2 work well.
+    ///
+    /// See page 5 of <https://arxiv.org/pdf/1909.05858.pdf>
+    pub repetition_penalty: f32,
+
+    /// Subtract this value from the token's logit for each time the token appears in the
+    /// `last_n` tokens. 0.0 disables this, and 0.0-1.0 are reasonable values.
+    ///
+    /// See: <https://platform.openai.com/docs/guides/text-generation/parameter-details>
+    pub frequency_penalty: f32,
+
+    /// Subtract this value from the token's logit if the token appears in the `last_n` tokens.
+    /// 0.0 disables this, and 0.0-1.0 are reasonable values.
+    ///
+    /// See: <https://platform.openai.com/docs/guides/text-generation/parameter-details>
+    pub presence_penalty: f32,
+
+    /// How many tokens back to look when determining penalties. -1 means context size, and 0
+    /// disables this stage.
+    pub last_n: i32,
+}
+impl Default for RepetitionPenalty {
+    fn default() -> Self {
+        Self {
+            repetition_penalty: 1.1,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+            last_n: 64,
+        }
     }
 }
 

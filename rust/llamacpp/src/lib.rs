@@ -1,5 +1,5 @@
 use lazy_static::lazy_static;
-use llama_cpp::standard_sampler::StandardSampler;
+use llama_cpp::standard_sampler::{SamplerStage, StandardSampler};
 use llama_cpp::{LlamaModel, LlamaParams, SessionParams, SplitMode};
 use num_cpus;
 use rayon;
@@ -11,6 +11,7 @@ use redis_module::{
 use serde_json;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 use std::thread;
 
@@ -172,7 +173,189 @@ fn create_inference(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok("OK".into())
 }
 
-fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError> {
+fn start_completing_with(
+    model_name: &str,
+    _model: &LlamaModel,
+    _prompts: &Vec<String>,
+    _sample_params: &SampleParams,
+    out_put: &mut String,
+) -> Option<RedisError> {
+    // use default session params
+    // todo: create session redis type
+    let mut params = SessionParams::default();
+    params.n_ctx = 2048;
+    let res = _model.create_session(params);
+    if res.is_err() {
+        return Some(RedisError::String(format!(
+            "model {:#} Failed to create session",
+            model_name
+        )));
+    }
+    let mut session = res.unwrap();
+
+    // prompt
+    for p_ctx in _prompts {
+        session.advance_context(p_ctx).unwrap();
+    }
+
+    let mut stages = Vec::<SamplerStage>::new();
+    stages.push(SamplerStage::RepetitionPenalty {
+        repetition_penalty: _sample_params.repetition_penalty.repetition_penalty,
+        frequency_penalty: _sample_params.repetition_penalty.frequency_penalty,
+        presence_penalty: _sample_params.repetition_penalty.presence_penalty,
+        last_n: _sample_params.repetition_penalty.last_n,
+    });
+    stages.push(SamplerStage::Temperature(_sample_params.temperature));
+    stages.push(SamplerStage::TopK(_sample_params.top_k));
+    stages.push(SamplerStage::TopP(_sample_params.top_p));
+    stages.push(SamplerStage::MinP(_sample_params.min_p));
+    let mut sampler = StandardSampler::default();
+    if _sample_params.token_selector == "softmax" {
+        sampler = StandardSampler::new_softmax(stages, _sample_params.min_keep);
+    } else if _sample_params.token_selector == "greedy" {
+        sampler = StandardSampler::new_greedy();
+    }
+    // `session.start_completing_with` creates a worker thread that generates tokens. When the completion
+    // handle is dropped, tokens stop generating!
+    let completions = session
+        .start_completing_with(sampler, _sample_params.max_tokens)
+        .into_strings();
+
+    let mut decoded_tokens = 0;
+    for completion in completions {
+        log_debug(format!("{completion}"));
+        out_put.push_str(completion.as_str());
+        decoded_tokens += 1;
+        if decoded_tokens > _sample_params.max_tokens {
+            break;
+        }
+    }
+
+    return None;
+}
+
+// LLAMACPP.INFERENCE_CHAT hello_world_infer
+// LLAMACPP.INFERENCE_CHAT hello_world_infer --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
+// LLAMACPP.INFERENCE_CHAT assistant_tpl_infer --vars '{"system": "hello", "user": "world"}'
+// LLAMACPP.INFERENCE_CHAT assistant_tpl_infer --vars '{"system": "hello", "user": "world"}' --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min_p": 0.1,"max_tokens":1024}'
+/*
+ --top-k N             top-k sampling (default: 40, 0 = disabled)
+ --top-p N             top-p sampling (default: 0.9, 1.0 = disabled)
+ --min-p N             min-p sampling (default: 0.1, 0.0 = disabled)
+ --temp N              temperature (default: 0.8)
+ --max_tokens(--n-predict) N  number of tokens to predict (default: -1, -1 = infinity, -2 = until context filled)
+*/
+fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.auto_memory();
+    if args.len() < 2 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let inference_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let mut tpl_vars = HashMap::<String, String>::default();
+    let mut is_tpl_vars = false;
+    let mut sample_params = SampleParams::default();
+    while let Ok(p) = args.next_string() {
+        if p.to_lowercase() == "--vars" {
+            let tpl_vars_json_str = args.next_str()?;
+            tpl_vars = serde_json::from_str(&tpl_vars_json_str)?;
+            is_tpl_vars = true;
+        }
+        if p.to_lowercase() == "--sample_params" {
+            let sample_json_str = args.next_str()?;
+            sample_params = serde_json::from_str(&sample_json_str)?;
+        }
+    }
+
+    // check params
+    if !vec!["greed", "softmax"].contains(&sample_params.token_selector.as_str()) {
+        return Err(RedisError::String(format!(
+            "sampler token_selector {:#} don't support ",
+            sample_params.token_selector
+        )));
+    }
+
+    let redis_inference_name = ctx.create_string(inference_name.clone());
+    let key = ctx.open_key_writable(&redis_inference_name);
+    match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
+        None => {
+            return Err(RedisError::String(format!(
+                "inference: {} does not exists",
+                inference_name
+            )));
+        }
+        Some(val) => {
+            let blocked_client = ctx.block_client();
+            unsafe {
+                LLM_INFERENCE_POOL
+                    .borrow_mut()
+                    .as_ref()
+                    .unwrap()
+                    .spawn(move || {
+                        log_debug(format!(
+                            "Task executes on thread: {:?}",
+                            thread::current().id()
+                        ));
+                        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                        let ctx = thread_ctx.lock();
+                        let prompt_redis = ctx.create_string(val.prompt_name.clone());
+                        let prompt_key = ctx.open_key(&prompt_redis);
+                        let prompt_res =
+                            prompt_key.get_value::<PromptRedis>(&LLAMACPP_PROMPT_REDIS_TYPE);
+                        let model_redis = ctx.create_string(val.model_name.clone());
+                        let model_key = ctx.open_key(&model_redis);
+                        let model_res =
+                            model_key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE);
+                        drop(ctx);
+
+                        if prompt_res.is_err() {
+                            thread_ctx.reply(Err(prompt_res.err().unwrap()));
+                            return;
+                        }
+                        let prompt_val = prompt_res.unwrap().unwrap();
+                        let mut promts: Vec<String> = vec![];
+                        for prompt in &prompt_val.prompts {
+                            let mut p_str = prompt.clone();
+                            if is_tpl_vars {
+                                // replace var
+                                for (k, v) in &tpl_vars {
+                                    let key_str = format!("{{{k}}}");
+                                    p_str = p_str.replace(key_str.as_str(), v);
+                                }
+                            }
+                            promts.push(p_str);
+                        }
+
+                        if model_res.is_err() {
+                            thread_ctx.reply(Err(model_res.err().unwrap()));
+                            return;
+                        }
+                        let model_val = model_res.unwrap().unwrap();
+                        let llama_model = model_val.clone().model.unwrap();
+
+                        let mut out_put = String::new();
+                        let res = start_completing_with(
+                            model_val.name.as_str(),
+                            &llama_model.deref(),
+                            &promts,
+                            &sample_params,
+                            &mut out_put,
+                        );
+                        if res.is_some() {
+                            thread_ctx.reply(Err(res.unwrap()));
+                            return;
+                        }
+                        // todo: use stream chat, need redis stream (init chat pipline by client with limit_num)
+                        thread_ctx.reply(Ok(out_put.into()));
+                    });
+            }
+        }
+    }
+
+    Ok(RedisValue::NoReply)
+}
+
+fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
     let res = LlamaModel::load_from_file(model, LlamaParams::default());
     if res.is_err() {
         return Some(RedisError::String(format!("model {} load error", model)));
@@ -217,38 +400,6 @@ fn start_completing_with(model: &str, out_put: &mut String) -> Option<RedisError
     return None;
 }
 
-// LLAMACPP.INFERENCE_CHAT hello_world
-// LLAMACPP.INFERENCE_CHAT hello_world --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
-// LLAMACPP.INFERENCE_CHAT assistant_tpl --vars '{"system": "hello", "user": "world"}'
-// LLAMACPP.INFERENCE_CHAT assistant_tpl --vars '{"system": "hello", "user": "world"}' --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
-/*
- --top-k N             top-k sampling (default: 40, 0 = disabled)
- --top-p N             top-p sampling (default: 0.9, 1.0 = disabled)
- --min-p N             min-p sampling (default: 0.1, 0.0 = disabled)
- --temp N              temperature (default: 0.8)
-*/
-fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.auto_memory();
-    if args.len() < 2 {
-        return Err(RedisError::WrongArity);
-    }
-    let mut args = args.into_iter().skip(1);
-    let inference_name = format!("{}.p.{}", PREFIX, args.next_str()?);
-    let redis_inference_name = ctx.create_string(inference_name.clone());
-    let key = ctx.open_key_writable(&redis_inference_name);
-    match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
-        None => {
-            return Err(RedisError::String(format!(
-                "inference: {} does not exists",
-                inference_name
-            )));
-        }
-        Some(_) => {}
-    }
-
-    Ok(RedisValue::NoReply)
-}
-
 fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_debug(format!("llm_inference_chat_test args:{:?}", args).as_str());
     if args.len() < 2 {
@@ -271,7 +422,7 @@ fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                 ));
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
                 let mut out_put = String::new();
-                let res = start_completing_with(model, &mut out_put);
+                let res = start_completing(model, &mut out_put);
                 if res.is_some() {
                     thread_ctx.reply(Err(res.unwrap()));
                     return;
