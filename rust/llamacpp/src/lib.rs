@@ -37,15 +37,14 @@ lazy_static! {
 // LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
 // LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
 // LLAMACPP.CREATE_MODEL qwen1_5-7b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
-fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.auto_memory();
+fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    _ctx.auto_memory();
     if args.len() < 4 {
         return Err(RedisError::WrongArity);
     }
 
     let mut args = args.into_iter().skip(1);
     let name = format!("{}.m.{}", PREFIX, args.next_str()?);
-    let model_name = ctx.create_string(name.clone());
 
     if args.next_string()?.to_lowercase() != "--opts" {
         return Err(RedisError::WrongArity);
@@ -53,49 +52,84 @@ fn create_model(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let model_opts_json_str = args.next_str()?;
     let model_opts: ModelOpts = serde_json::from_str(&model_opts_json_str)?;
 
-    // get model redisType value
-    let key = ctx.open_key_writable(&model_name);
-    match key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE)? {
-        Some(_) => {
-            return Err(RedisError::String(format!(
-                "Model: {} already exists",
-                name
-            )));
-        }
-        None => {
-            // create llama model
-            let mut params = LlamaParams::default();
-            if model_opts.model_params.n_gpu_layers > 0 {
-                params.n_gpu_layers = model_opts.model_params.n_gpu_layers;
-            }
-            if model_opts.model_params.split_mode == "layer" {
-                params.split_mode = SplitMode::Layer;
-            } else if model_opts.model_params.split_mode == "row" {
-                params.split_mode = SplitMode::Row;
-            }
-            params.main_gpu = model_opts.model_params.main_gpu;
-            params.use_mlock = model_opts.model_params.use_mlock;
-            params.use_mmap = model_opts.model_params.use_mmap;
-            params.vocab_only = model_opts.model_params.vocab_only;
-            let res = LlamaModel::load_from_file(model_opts.clone().model_path, params);
-            if res.is_err() {
-                return Err(RedisError::String(format!("model {} load error", name)));
-            }
-            let _model = res.unwrap();
+    let blocked_client = _ctx.block_client();
+    unsafe {
+        LLM_INFERENCE_POOL
+            .borrow_mut()
+            .as_ref()
+            .unwrap()
+            .spawn(move || {
+                let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                let ctx = thread_ctx.lock();
+                // get model redisType value
+                let model_name = ctx.create_string(name.clone());
+                let key = ctx.open_key_writable(&model_name);
+                let get_res = key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE);
+                drop(ctx);
+                if get_res.is_err() {
+                    thread_ctx.reply(Err(RedisError::String(format!(
+                        "model: {} get err {}",
+                        name,
+                        get_res.err().unwrap().to_string()
+                    ))));
+                    return;
+                }
+                if get_res.unwrap().is_some() {
+                    thread_ctx.reply(Err(RedisError::String(format!(
+                        "Model: {} already exists",
+                        name
+                    ))));
+                    return;
+                }
+                log_debug(format!(
+                    "Task executes on thread: {:?}",
+                    thread::current().id()
+                ));
+                // create llama model
+                let mut params = LlamaParams::default();
+                if model_opts.model_params.n_gpu_layers > 0 {
+                    params.n_gpu_layers = model_opts.model_params.n_gpu_layers;
+                }
+                if model_opts.model_params.split_mode == "layer" {
+                    params.split_mode = SplitMode::Layer;
+                } else if model_opts.model_params.split_mode == "row" {
+                    params.split_mode = SplitMode::Row;
+                }
+                params.main_gpu = model_opts.model_params.main_gpu;
+                params.use_mlock = model_opts.model_params.use_mlock;
+                params.use_mmap = model_opts.model_params.use_mmap;
+                params.vocab_only = model_opts.model_params.vocab_only;
+                let res = LlamaModel::load_from_file(model_opts.clone().model_path, params);
+                if res.is_err() {
+                    thread_ctx.reply(Err(RedisError::String(format!(
+                        "model {} load error {}",
+                        name,
+                        res.as_ref().err().unwrap().to_string()
+                    ))));
+                }
+                let _model = res.unwrap();
 
-            // create model redis type
-            let mut redis_model = ModelRedis::default();
-            redis_model.name = name;
-            redis_model.model_opts = model_opts;
-            redis_model.model = Some(Arc::new(_model));
+                // create model redis type
+                let mut redis_model = ModelRedis::default();
+                redis_model.name = name;
+                redis_model.model_opts = model_opts;
+                redis_model.model = Some(Arc::new(_model));
 
-            // set index redisType value
-            ctx.log_debug(format!("create LlamaCPP Model {:?}", redis_model).as_str());
-            key.set_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE, redis_model.into())?;
-        }
+                // set index redisType value
+                log_debug(format!("create LlamaCPP Model {:?}", redis_model).as_str());
+                let ctx = thread_ctx.lock();
+                let set_res =
+                    key.set_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE, redis_model.into());
+                drop(ctx);
+                if set_res.is_err() {
+                    thread_ctx.reply(Err(set_res.err().unwrap()));
+                    return;
+                }
+                thread_ctx.reply(Ok("OK".into()));
+            });
     }
 
-    Ok("OK".into())
+    Ok(RedisValue::NoReply)
 }
 
 // LLAMACPP.CREATE_PROMPT hello_prompt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
@@ -187,7 +221,7 @@ fn start_completing_with(
     let res = _model.create_session(params);
     if res.is_err() {
         return Some(RedisError::String(format!(
-            "model {:#} Failed to create session",
+            "model {} Failed to create session",
             model_name
         )));
     }

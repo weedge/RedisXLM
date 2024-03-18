@@ -321,7 +321,7 @@ impl From<PromptRedis> for RedisValue {
 }
 
 pub static LLAMACPP_PROMPT_REDIS_TYPE: RedisType = RedisType::new(
-    "lm_promptx",
+    "lm_prompt",
     APP_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
@@ -422,7 +422,7 @@ impl From<InferenceRedis> for RedisValue {
 }
 
 pub static LLAMACPP_INFERENCE_REDIS_TYPE: RedisType = RedisType::new(
-    "lm_promptx",
+    "lm_inferx",
     APP_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
