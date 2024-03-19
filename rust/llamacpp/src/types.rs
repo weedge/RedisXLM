@@ -136,7 +136,7 @@ impl From<ModelRedis> for RedisValue {
     }
 }
 
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "snake_case", default)]
 pub struct SampleParams {
     #[serde(default = "default_temperature")]
@@ -188,6 +188,20 @@ fn default_token_selector() -> String {
 }
 fn default_max_tokens() -> usize {
     2048
+}
+impl Default for SampleParams {
+    fn default() -> Self {
+        Self {
+            temperature: default_temperature(),
+            top_k: default_top_k(),
+            top_p: default_top_p(),
+            min_p: default_min_p(),
+            min_keep: default_min_keep(),
+            token_selector: default_token_selector(),
+            max_tokens: default_max_tokens(),
+            repetition_penalty: RepetitionPenalty::default(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]

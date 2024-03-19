@@ -13,7 +13,8 @@ use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
-use std::thread;
+use std::thread::{self};
+use std::time::Duration;
 
 //#[allow(dead_code, unused_variables, unused_mut)]
 mod types;
@@ -33,12 +34,8 @@ lazy_static! {
 
 // like google https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models defined models
 // if tuned,pretrained model, just use https://cloud.google.com/vertex-ai/docs/start/explore-models
-// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm","model_params":{}}'
-// LLAMACPP.CREATE_MODEL qwen1_5-0_5b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
-// LLAMACPP.CREATE_MODEL qwen1_5-1_8b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
-// LLAMACPP.CREATE_MODEL qwen1_5-7b-chat-q8_0.gguf --OPTS '{"model_path" : "$MODEL_PATH","model_type":"local_inference_llm"}'
+// LLAMACPP.CREATE_MODEL neural-chat-7b-v3-3.Q4_K_M.gguf --opts '{"model_path":"$PATH","model_type":"local_inference_lm","model_params":{"n_gpu_layers":0}}'
 fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    _ctx.auto_memory();
     if args.len() < 4 {
         return Err(RedisError::WrongArity);
     }
@@ -65,7 +62,6 @@ fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                 let model_name = ctx.create_string(name.clone());
                 let key = ctx.open_key_writable(&model_name);
                 let get_res = key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE);
-                drop(ctx);
                 if get_res.is_err() {
                     thread_ctx.reply(Err(RedisError::String(format!(
                         "model: {} get err {}",
@@ -117,10 +113,8 @@ fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 
                 // set index redisType value
                 log_debug(format!("create LlamaCPP Model {:?}", redis_model).as_str());
-                let ctx = thread_ctx.lock();
                 let set_res =
                     key.set_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE, redis_model.into());
-                drop(ctx);
                 if set_res.is_err() {
                     thread_ctx.reply(Err(set_res.err().unwrap()));
                     return;
@@ -169,24 +163,44 @@ fn create_prompt(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok("OK".into())
 }
 
-// LLAMACPP.CREATE_INFERENCE hello_world_infer --model qwen1_5-0_5b-chat-q8_0.gguf --prompt hello_prompt
-// LLAMACPP.CREATE_INFERENCE assistant_tpl_infer --model qwen1_5-0_5b-chat-q8_0.gguf --prompt assistant_prompt_tpl
+// LLAMACPP.CREATE_INFERENCE {inference_name} {model_name} {prompt_name}
+// LLAMACPP.CREATE_INFERENCE hello_world_infer neural-chat-7b-v3-3.Q4_K_M.gguf hello_prompt
+// LLAMACPP.CREATE_INFERENCE assistant_tpl_infer neural-chat-7b-v3-3.Q4_K_M.gguf assistant_prompt_tpl
 fn create_inference(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.auto_memory();
-    if args.len() < 6 {
+    if args.len() < 4 {
         return Err(RedisError::WrongArity);
     }
     let mut args = args.into_iter().skip(1);
-    let name = format!("{}.p.{}", PREFIX, args.next_str()?);
-    let model_name = format!("{}.p.{}", PREFIX, args.next_str()?);
-    let prompt_name = format!("{}.p.{}", PREFIX, args.next_str()?);
-    let inference_name = ctx.create_string(name.clone());
+    let name = format!("{}.i.{}", PREFIX, args.next_str()?);
+    let model_name = format!("{}.m.{}", PREFIX, args.next_str()?);
+    let redis_name = ctx.create_string(model_name.clone());
+    let key = ctx.open_key_writable(&redis_name);
+    let get_res = key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE)?;
+    if get_res.is_none() {
+        return Err(RedisError::String(format!(
+            "model: {} don't exists",
+            model_name
+        )));
+    }
 
+    let prompt_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let redis_name = ctx.create_string(prompt_name.clone());
+    let key = ctx.open_key_writable(&redis_name);
+    let get_res = key.get_value::<ModelRedis>(&LLAMACPP_PROMPT_REDIS_TYPE)?;
+    if get_res.is_none() {
+        return Err(RedisError::String(format!(
+            "prompt: {} don't exists",
+            prompt_name
+        )));
+    }
+
+    let inference_name = ctx.create_string(name.clone());
     let key = ctx.open_key_writable(&inference_name);
     match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
         Some(_) => {
             return Err(RedisError::String(format!(
-                "prompt: {} already exists",
+                "inference: {} already exists",
                 name
             )));
         }
@@ -279,13 +293,12 @@ fn start_completing_with(
  --temp N              temperature (default: 0.8)
  --max_tokens(--n-predict) N  number of tokens to predict (default: -1, -1 = infinity, -2 = until context filled)
 */
-fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.auto_memory();
+fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() < 2 {
         return Err(RedisError::WrongArity);
     }
     let mut args = args.into_iter().skip(1);
-    let inference_name = format!("{}.p.{}", PREFIX, args.next_str()?);
+    let inference_name = format!("{}.i.{}", PREFIX, args.next_str()?);
     let mut tpl_vars = HashMap::<String, String>::default();
     let mut is_tpl_vars = false;
     let mut sample_params = SampleParams::default();
@@ -309,8 +322,8 @@ fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         )));
     }
 
-    let redis_inference_name = ctx.create_string(inference_name.clone());
-    let key = ctx.open_key_writable(&redis_inference_name);
+    let redis_inference_name = _ctx.create_string(inference_name.clone());
+    let key = _ctx.open_key_writable(&redis_inference_name);
     match key.get_value::<InferenceRedis>(&LLAMACPP_INFERENCE_REDIS_TYPE)? {
         None => {
             return Err(RedisError::String(format!(
@@ -319,7 +332,7 @@ fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             )));
         }
         Some(val) => {
-            let blocked_client = ctx.block_client();
+            let blocked_client = _ctx.block_client();
             unsafe {
                 LLM_INFERENCE_POOL
                     .borrow_mut()
@@ -340,7 +353,6 @@ fn inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                         let model_key = ctx.open_key(&model_redis);
                         let model_res =
                             model_key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE);
-                        drop(ctx);
 
                         if prompt_res.is_err() {
                             thread_ctx.reply(Err(prompt_res.err().unwrap()));
@@ -455,6 +467,9 @@ fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                     thread::current().id()
                 ));
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                let ctx = thread_ctx.lock();
+                thread::sleep(Duration::from_millis(3000));
+                drop(ctx);
                 let mut out_put = String::new();
                 let res = start_completing(model, &mut out_put);
                 if res.is_some() {
