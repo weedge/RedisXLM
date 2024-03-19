@@ -136,6 +136,24 @@ impl From<ModelRedis> for RedisValue {
     }
 }
 
+pub struct EmbeddingResult {
+    pub vecs: Vec<Vec<f32>>,
+}
+
+impl From<EmbeddingResult> for RedisValue {
+    fn from(value: EmbeddingResult) -> Self {
+        let mut reply: Vec<RedisValue> = Vec::new();
+        let mut vecs_f64: Vec<f64> = Vec::new();
+        for vec in value.vecs {
+            for val in vec {
+                vecs_f64.push(val as f64);
+            }
+            reply.push(vecs_f64.clone().into());
+        }
+        reply.into()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "snake_case", default)]
 pub struct SampleParams {

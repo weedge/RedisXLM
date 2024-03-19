@@ -1,8 +1,8 @@
 use lazy_static::lazy_static;
 use llama_cpp::standard_sampler::{SamplerStage, StandardSampler};
-use llama_cpp::{LlamaModel, LlamaParams, SessionParams, SplitMode};
+use llama_cpp::{EmbeddingsParams, LlamaModel, LlamaParams, SessionParams, SplitMode};
 use num_cpus;
-use rayon;
+use rayon::{self};
 use redis_module::logging::log_debug;
 use redis_module::{
     redis_module, Context, NextArg, RedisError, RedisResult, RedisString, RedisValue, Status,
@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 use std::thread::{self};
-use std::time::Duration;
 
 //#[allow(dead_code, unused_variables, unused_mut)]
 mod types;
@@ -35,6 +34,7 @@ lazy_static! {
 // like google https://cloud.google.com/vertex-ai/docs/generative-ai/learn/models defined models
 // if tuned,pretrained model, just use https://cloud.google.com/vertex-ai/docs/start/explore-models
 // LLAMACPP.CREATE_MODEL neural-chat-7b-v3-3.Q4_K_M.gguf --opts '{"model_path":"$PATH","model_type":"local_inference_lm","model_params":{"n_gpu_layers":0}}'
+// LLAMACPP.CREATE_MODEL nomic-embed-text-v1.5.f16.gguf --opts '{"model_path":"$PATH","model_type":"local_embedding_lm","model_params":{"n_gpu_layers":0}}'
 fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() < 4 {
         return Err(RedisError::WrongArity);
@@ -446,7 +446,7 @@ fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
     return None;
 }
 
-fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_debug(format!("llm_inference_chat_test args:{:?}", args).as_str());
     if args.len() < 2 {
         return Err(RedisError::WrongArity);
@@ -467,9 +467,6 @@ fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                     thread::current().id()
                 ));
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-                let ctx = thread_ctx.lock();
-                thread::sleep(Duration::from_millis(3000));
-                drop(ctx);
                 let mut out_put = String::new();
                 let res = start_completing(model, &mut out_put);
                 if res.is_some() {
@@ -478,6 +475,68 @@ fn inference_chat_test(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                 }
                 // todo: use stream chat, need redis stream (init chat pipline by client with limit_num)
                 thread_ctx.reply(Ok(out_put.into()));
+            });
+    }
+
+    Ok(RedisValue::NoReply)
+}
+
+fn start_embedding(model: &str, chunks: &Vec<String>) -> Result<Vec<Vec<f32>>, RedisError> {
+    let res = LlamaModel::load_from_file(model, LlamaParams::default());
+    if res.is_err() {
+        return Err(RedisError::String(format!("model {} load error", model)));
+    }
+    log_debug(format!("Load model: {}", model));
+    let _model = res.unwrap();
+
+    let params = EmbeddingsParams::default();
+    let res = _model.embeddings(chunks, params);
+    if res.is_err() {
+        return Err(RedisError::String(format!(
+            "model  {} embedding error {}",
+            model,
+            res.err().unwrap()
+        )));
+    }
+
+    Ok(res.unwrap())
+}
+
+fn async_block_embedding(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.log_debug(format!("llm_embedding_test args:{:?}", args).as_str());
+    if args.len() < 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let model = args.next_str()?;
+
+    let mut chunks: Vec<String> = vec![];
+    while let Ok(p) = args.next_string() {
+        chunks.push(p);
+    }
+
+    let blocked_client = ctx.block_client();
+    unsafe {
+        LLM_INFERENCE_POOL
+            .borrow_mut()
+            .as_ref()
+            .unwrap()
+            .spawn(move || {
+                log_debug(format!(
+                    "Task executes on thread: {:?}",
+                    thread::current().id()
+                ));
+                let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                let vecs_res = start_embedding(model, &chunks);
+                if vecs_res.is_err() {
+                    thread_ctx.reply(Err(vecs_res.err().unwrap()));
+                    return;
+                }
+
+                thread_ctx.reply(Ok(EmbeddingResult {
+                    vecs: vecs_res.unwrap(),
+                }
+                .into()));
             });
     }
 
@@ -497,7 +556,8 @@ redis_module! {
         [format!("{}.create_prompt", PREFIX), create_prompt, "", 0, 0, 0],
         [format!("{}.create_inference", PREFIX), create_inference, "", 0, 0, 0],
         [format!("{}.inference_chat", PREFIX), inference_chat, "", 0, 0, 0],
-        [format!("{}.inference_chat_test", PREFIX), inference_chat_test, "", 0, 0, 0],
+        [format!("{}.async_inference_chat_model", PREFIX), async_block_inference_chat, "", 0, 0, 0],
+        [format!("{}.async_embedding_model", PREFIX), async_block_embedding, "", 0, 0, 0],
     ],
 }
 
