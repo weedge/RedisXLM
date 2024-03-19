@@ -126,6 +126,8 @@ fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+// more prompt engineering tpl, see langchan smith hub: https://smith.langchain.com/hub
+// Prompt Engineering Guide:  https://www.promptingguide.ai
 // LLAMACPP.CREATE_PROMPT hello_prompt "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
 // LLAMACPP.CREATE_PROMPT assistant_prompt_tpl "<|SYSTEM|>{{system}}." "<|USER|>{{user}}" "<|ASSISTANT|>"
 // see openai prompt example: https://platform.openai.com/examples
@@ -447,7 +449,7 @@ fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
 }
 
 fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.log_debug(format!("llm_inference_chat_test args:{:?}", args).as_str());
+    ctx.log_debug(format!("async_block_inference_chat args:{:?}", args).as_str());
     if args.len() < 2 {
         return Err(RedisError::WrongArity);
     }
@@ -503,7 +505,7 @@ fn start_embedding(model: &str, chunks: &Vec<String>) -> Result<Vec<Vec<f32>>, R
 }
 
 fn async_block_embedding(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    ctx.log_debug(format!("llm_embedding_test args:{:?}", args).as_str());
+    ctx.log_debug(format!("async_block_embedding args:{:?}", args).as_str());
     if args.len() < 3 {
         return Err(RedisError::WrongArity);
     }
@@ -543,6 +545,80 @@ fn async_block_embedding(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn start_embedding_with(
+    _model: &LlamaModel,
+    chunks: &Vec<String>,
+) -> Result<Vec<Vec<f32>>, RedisError> {
+    let params = EmbeddingsParams::default();
+    let res = _model.embeddings(chunks, params);
+    if res.is_err() {
+        return Err(RedisError::String(format!(
+            "_model.embeddings error {}",
+            res.err().unwrap()
+        )));
+    }
+
+    Ok(res.unwrap())
+}
+
+// LLAMACPP.EMBEDDING nomic-embed-text-v1.5.f16.gguf "hello world"
+fn embedding(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    ctx.log_debug(format!("embedding args:{:?}", args).as_str());
+    if args.len() < 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let mut args = args.into_iter().skip(1);
+    let model_name = format!("{}.m.{}", PREFIX, args.next_str()?);
+
+    let mut chunks: Vec<String> = vec![];
+    while let Ok(p) = args.next_string() {
+        chunks.push(p);
+    }
+
+    let blocked_client = ctx.block_client();
+    unsafe {
+        LLM_INFERENCE_POOL
+            .borrow_mut()
+            .as_ref()
+            .unwrap()
+            .spawn(move || {
+                log_debug(format!(
+                    "Task executes on thread: {:?}",
+                    thread::current().id()
+                ));
+                let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                let ctx = thread_ctx.lock();
+                let model_redis = ctx.create_string(model_name.as_str());
+                let model_key = ctx.open_key(&model_redis);
+                let model_res = model_key.get_value::<ModelRedis>(&LLAMACPP_MODEL_REDIS_TYPE);
+                if model_res.is_err() {
+                    thread_ctx.reply(Err(model_res.err().unwrap()));
+                    return;
+                }
+                if model_res.as_ref().unwrap().is_none() {
+                    thread_ctx.reply(Err(RedisError::String(format!(
+                        "model {} not found",
+                        model_name
+                    ))));
+                    return;
+                }
+                let model = model_res.unwrap().unwrap().model.as_ref().unwrap();
+                let vecs_res = start_embedding_with(model, &chunks);
+                if vecs_res.is_err() {
+                    thread_ctx.reply(Err(vecs_res.err().unwrap()));
+                    return;
+                }
+
+                thread_ctx.reply(Ok(EmbeddingResult {
+                    vecs: vecs_res.unwrap(),
+                }
+                .into()));
+            });
+    }
+
+    Ok(RedisValue::NoReply)
+}
+
 //////////////////////////////////////////////////////
 
 redis_module! {
@@ -556,6 +632,7 @@ redis_module! {
         [format!("{}.create_prompt", PREFIX), create_prompt, "", 0, 0, 0],
         [format!("{}.create_inference", PREFIX), create_inference, "", 0, 0, 0],
         [format!("{}.inference_chat", PREFIX), inference_chat, "", 0, 0, 0],
+        [format!("{}.embedding", PREFIX), embedding, "", 0, 0, 0],
         [format!("{}.async_inference_chat_model", PREFIX), async_block_inference_chat, "", 0, 0, 0],
         [format!("{}.async_embedding_model", PREFIX), async_block_embedding, "", 0, 0, 0],
     ],
