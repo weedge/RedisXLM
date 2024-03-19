@@ -1,7 +1,9 @@
-use llama_cpp::LlamaModel;
+use llama_cpp::{LlamaModel, LlamaParams, SplitMode};
 use llama_cpp_sys::llama_model_default_params;
+use redis_module::RedisString;
 use redis_module::{native_types::RedisType, raw, RedisValue};
 use serde::{Deserialize, Serialize};
+use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
 use std::{env, fmt, path::Path, sync::Arc};
 use std::{mem, ptr};
@@ -293,11 +295,57 @@ pub static LLAMACPP_MODEL_REDIS_TYPE: RedisType = RedisType::new(
 
 unsafe extern "C" fn save_model(_rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
     let _m = unsafe { &*value.cast::<ModelRedis>() };
+    let name_cstring = CString::new(_m.name.as_str()).unwrap();
+    raw::save_string(_rdb, name_cstring.to_str().unwrap());
+
+    let opts_serialized_json = serde_json::to_string(&_m.model_opts).unwrap();
+    let opts_cjson = CString::new(opts_serialized_json).unwrap();
+    raw::save_string(_rdb, opts_cjson.to_str().unwrap());
 }
 
 unsafe extern "C" fn load_model(_rdb: *mut raw::RedisModuleIO, encver: c_int) -> *mut c_void {
     match encver {
-        //0 => {}
+        0 => {
+            let mut model = Box::new(ModelRedis::default());
+
+            model.name = RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                .unwrap()
+                .to_owned();
+
+            let model_opts_json = RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                .unwrap()
+                .to_owned();
+            model.model_opts = serde_json::from_str(&model_opts_json).unwrap();
+
+            let mut params = LlamaParams::default();
+            if model.model_opts.model_params.n_gpu_layers > 0 {
+                params.n_gpu_layers = model.model_opts.model_params.n_gpu_layers;
+            }
+            if model.model_opts.model_params.split_mode == "layer" {
+                params.split_mode = SplitMode::Layer;
+            } else if model.model_opts.model_params.split_mode == "row" {
+                params.split_mode = SplitMode::Row;
+            }
+            params.main_gpu = model.model_opts.model_params.main_gpu;
+            params.use_mlock = model.model_opts.model_params.use_mlock;
+            params.use_mmap = model.model_opts.model_params.use_mmap;
+            params.vocab_only = model.model_opts.model_params.vocab_only;
+            let res = LlamaModel::load_from_file(&model.model_opts.model_path, params);
+            if res.is_err() {
+                println!(
+                    "model {} load_from_file {} error {}",
+                    model.name,
+                    model.model_opts.model_path,
+                    res.as_ref().err().unwrap().to_string()
+                );
+            }
+            let _model = res.unwrap();
+            model.model = Some(Arc::new(_model));
+
+            println!("load llamacpp model {:?}", model);
+            let model: *mut c_void = Box::into_raw(model) as *mut c_void;
+            model
+        }
         _ => ptr::null_mut() as *mut c_void,
     }
 }
@@ -386,11 +434,33 @@ pub static LLAMACPP_PROMPT_REDIS_TYPE: RedisType = RedisType::new(
 
 unsafe extern "C" fn save_prompt(_rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
     let _m = unsafe { &*value.cast::<PromptRedis>() };
+    let name_cstring = CString::new(_m.name.as_str()).unwrap();
+    raw::save_string(_rdb, name_cstring.to_str().unwrap());
+
+    let prompts_serialized_json = serde_json::to_string(&_m.prompts).unwrap();
+    let prompts_cjson = CString::new(prompts_serialized_json).unwrap();
+    raw::save_string(_rdb, prompts_cjson.to_str().unwrap());
 }
 
 unsafe extern "C" fn load_prompt(_rdb: *mut raw::RedisModuleIO, encver: c_int) -> *mut c_void {
     match encver {
-        //0 => {}
+        0 => {
+            let mut prompt = Box::new(PromptRedis::default());
+
+            prompt.name = RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                .unwrap()
+                .to_owned();
+
+            let prompt_opts_json =
+                RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                    .unwrap()
+                    .to_owned();
+            prompt.prompts = serde_json::from_str(&prompt_opts_json).unwrap();
+
+            println!("load prompt {:?}", prompt);
+            let prompt: *mut c_void = Box::into_raw(prompt) as *mut c_void;
+            prompt
+        }
         _ => ptr::null_mut() as *mut c_void,
     }
 }
@@ -487,11 +557,39 @@ pub static LLAMACPP_INFERENCE_REDIS_TYPE: RedisType = RedisType::new(
 
 unsafe extern "C" fn save_inference(_rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
     let _m = unsafe { &*value.cast::<InferenceRedis>() };
+    let name_cstring = CString::new(_m.name.as_str()).unwrap();
+    raw::save_string(_rdb, name_cstring.to_str().unwrap());
+
+    let name_cstring = CString::new(_m.model_name.as_str()).unwrap();
+    raw::save_string(_rdb, name_cstring.to_str().unwrap());
+
+    let name_cstring = CString::new(_m.prompt_name.as_str()).unwrap();
+    raw::save_string(_rdb, name_cstring.to_str().unwrap());
 }
 
 unsafe extern "C" fn load_inference(_rdb: *mut raw::RedisModuleIO, encver: c_int) -> *mut c_void {
     match encver {
-        //0 => {}
+        0 => {
+            let mut inference = Box::new(InferenceRedis::default());
+
+            inference.name = RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                .unwrap()
+                .to_owned();
+
+            inference.model_name =
+                RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                    .unwrap()
+                    .to_owned();
+
+            inference.prompt_name =
+                RedisString::from_ptr(raw::RedisModule_LoadString.unwrap()(_rdb))
+                    .unwrap()
+                    .to_owned();
+
+            println!("load inference {:?}", inference);
+            let inference: *mut c_void = Box::into_raw(inference) as *mut c_void;
+            inference
+        }
         _ => ptr::null_mut() as *mut c_void,
     }
 }

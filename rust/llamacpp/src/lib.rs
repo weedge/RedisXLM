@@ -95,7 +95,7 @@ fn create_model(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                 params.use_mlock = model_opts.model_params.use_mlock;
                 params.use_mmap = model_opts.model_params.use_mmap;
                 params.vocab_only = model_opts.model_params.vocab_only;
-                let res = LlamaModel::load_from_file(model_opts.clone().model_path, params);
+                let res = LlamaModel::load_from_file(&model_opts.model_path, params);
                 if res.is_err() {
                     thread_ctx.reply(Err(RedisError::String(format!(
                         "model {} load error {}",
