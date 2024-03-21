@@ -53,7 +53,11 @@ FetchContent_MakeAvailable(gemma)
 
 # Set shared lib
 set(SHARED_LIB shared)
-file(GLOB PROJECT_SOURCE_FILES "${PROJECT_SOURCE_DIR}/*.cpp")
+file(GLOB PROJECT_SOURCE_FILES 
+  "${PROJECT_SOURCE_DIR}/*.cpp", 
+  "${PROJECT_SOURCE_DIR}/command/*.cpp", 
+  "${PROJECT_SOURCE_DIR}/utils/*.cpp", 
+)
 add_library(${SHARED_LIB} SHARED ${PROJECT_SOURCE_FILES})
 
 # Executable target

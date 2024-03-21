@@ -2,7 +2,32 @@
 
 #include <cassert>
 
+#include "command/inference_chat_cmd.h"
+#include "errors.h"
+
+using namespace redisxlm;
+
+static void create_commands(RedisModuleCtx* ctx) {
+    if (RedisModule_CreateCommand(
+            ctx, "REDISXLM.INFERENCE_CHAT",
+            [](RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+                command::InferenceChatCmd cmd;
+                return cmd.run(ctx, argv, argc);
+            },
+            "readonly", 1, 1, 1)
+        == REDISMODULE_ERR) {
+        throw Error("failed to create REDISXLM.INFERENCE_CHAT command");
+    }
+}
+
 static int redisxlmInit(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+    try {
+        create_commands(ctx);
+    } catch (const Error& e) {
+        RedisModule_Log(ctx, "warning", "%s", e.what());
+        return REDISMODULE_ERR;
+    }
+
     return REDISMODULE_OK;
 }
 static void redisxlmFree(RedisModuleCtx* ctx) {
