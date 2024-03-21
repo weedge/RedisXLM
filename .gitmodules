@@ -9,4 +9,4 @@
 	url = https://github.com/RedisLabsModules/RedisModulesSDK.git
 [submodule "c++/deps/gemma"]
 	path = c++/deps/gemma
-	url = https://github.com/weedge/gemma.cpp.git
+	url = https://github.com/google/gemma.cpp.git
