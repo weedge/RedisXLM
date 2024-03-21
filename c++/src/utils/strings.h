@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -52,20 +53,9 @@ char** to_new_char_argv(RedisModuleString** argv, int argc) {
 
     char** new_argv = new char*[argc];
     for (auto idx = 0; idx < argc; ++idx) {
-        new_argv[idx] = const_cast<char*>(to_string(argv[idx]).c_str());
-    }
-
-    return new_argv;
-}
-
-const char** to_new_const_char_argv(RedisModuleString** argv, int argc) {
-    if (argv == nullptr || argc < 0) {
-        throw Error("null string");
-    }
-
-    const char** new_argv = new const char*[argc];
-    for (auto idx = 0; idx < argc; ++idx) {
-        new_argv[idx] = to_string(argv[idx]).c_str();
+        auto str = to_string(argv[idx]);
+        new_argv[idx] = new char[str.length() + 1];
+        std::strcpy(new_argv[idx], str.c_str());
     }
 
     return new_argv;

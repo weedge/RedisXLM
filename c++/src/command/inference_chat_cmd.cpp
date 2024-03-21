@@ -19,6 +19,7 @@ void InferenceChatCmd::_run(RedisModuleCtx* ctx, RedisModuleString** argv, int a
 
     auto prompt_str = redisxlm::utils::to_string(argv[argc - 1]);
     auto c_argv = redisxlm::utils::to_new_char_argv(argv, argc);
+    // auto const_argv = (const char**)c_argv;
     gcpp::LoaderArgs loader(argc, c_argv);
 
     // Rough heuristic for the number of threads to use
@@ -60,6 +61,10 @@ void InferenceChatCmd::_run(RedisModuleCtx* ctx, RedisModuleString** argv, int a
         tokens, /*KV cache position = */ 0, kv_cache, pool, stream_token, gen);
 
     RedisModule_ReplyWithStringBuffer(ctx, res.data(), res.size());
+
+    for (int i = 0; i < argc; ++i) {
+        delete[] c_argv[i];
+    }
     delete[] c_argv;
 }
 
