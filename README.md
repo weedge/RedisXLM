@@ -6,9 +6,9 @@
 ## RedisXLM
 - use rust/c/c++ impl redisxlm modules  
 
-- redis x language model inference (load pre-trained model); size (tiny|t, small|s, medium|m, large|l) with quantization;
+- redis x language model (load pre-trained model, instruction-tuned model); size (tiny|t, small|s, medium|m, large|l) with quantization;
 
-- Preload model types：
+- Load model types：
    1. embedding model
    2. generation(inference) model
 

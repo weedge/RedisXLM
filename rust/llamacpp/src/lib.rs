@@ -403,7 +403,11 @@ fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
-fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
+fn start_completing(
+    model: &str,
+    prompts: &Vec<String>,
+    out_put: &mut String,
+) -> Option<RedisError> {
     let res = LlamaModel::load_from_file(model, LlamaParams::default());
     if res.is_err() {
         return Some(RedisError::String(format!("model {} load error", model)));
@@ -420,11 +424,9 @@ fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
     }
     let mut session = res.unwrap();
 
-    session
-        .advance_context("<|SYSTEM|>You are a helpful assistant.")
-        .unwrap();
-    session.advance_context("<|USER|>Hello!").unwrap();
-    session.advance_context("<|ASSISTANT|>").unwrap();
+    for p in prompts {
+        session.advance_context(p).unwrap();
+    }
 
     // LLMs are typically used to predict the next word in a sequence. Let's generate some tokens!
     let max_tokens = 1024;
@@ -448,14 +450,20 @@ fn start_completing(model: &str, out_put: &mut String) -> Option<RedisError> {
     return None;
 }
 
+// LLAMACPP.ASYNC_INFERENCE_CHAT_MODEL "${MODEL_PATH}/neural-chat-7b-v3-3.Q4_K_M.gguf" "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
+// LLAMACPP.ASYNC_INFERENCE_CHAT_MODEL "${MODEL_PATH}/qwen1_5-0_5b-chat-q8_0.gguf" "<|im_start|>system\nYou are a helpful assistant.<|im_end|>" "<|im_start|>user" "hello" "<|im_end|>" "<|im_start|>assistant"
 fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_debug(format!("async_block_inference_chat args:{:?}", args).as_str());
-    if args.len() < 2 {
+    if args.len() < 3 {
         return Err(RedisError::WrongArity);
     }
     let mut args = args.into_iter().skip(1);
     let model = args.next_str()?;
-    log_debug(format!("Loading model: {}", model));
+
+    let mut prompts = Vec::new();
+    while let Ok(p) = args.next_string() {
+        prompts.push(p);
+    }
 
     let blocked_client = ctx.block_client();
     unsafe {
@@ -470,7 +478,7 @@ fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisRes
                 ));
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
                 let mut out_put = String::new();
-                let res = start_completing(model, &mut out_put);
+                let res = start_completing(model, &prompts, &mut out_put);
                 if res.is_some() {
                     thread_ctx.reply(Err(res.unwrap()));
                     return;
