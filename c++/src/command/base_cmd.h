@@ -5,8 +5,10 @@
 
 namespace redisxlm {
 namespace command {
+
 class BaseCommand {
 public:
+    BaseCommand() = default;
     virtual ~BaseCommand() = default;
     int run(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) const {
         try {
@@ -23,5 +25,6 @@ public:
 private:
     virtual void _run(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) const = 0;
 };
+
 }  // namespace command
 }  // namespace redisxlm

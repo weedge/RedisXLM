@@ -1,0 +1,17 @@
+{
+  "configurations": [
+    {
+      "name": "Mac-dev-env",
+      "includePath": ["${workspaceFolder}/**"],
+      "defines": [],
+      "macFrameworkPath": [
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX14.0.sdk/System/Library/Frameworks"
+      ],
+      "compilerPath": "/Library/Developer/CommandLineTools/usr/bin/clang++",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "macos-clang-x64",
+      "compilerArgs": ["-std=c++17", "-DREDISMODULE_EXPERIMENTAL_API"]
+    }
+  ],
+  "version": 4
+}

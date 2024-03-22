@@ -1,8 +1,7 @@
+#include "command/inference_chat_cmd.h"
 
-#include "inference_chat_cmd.h"
-
-#include "gemma/util/app.h"
-#include "gemma/util/args.h"
+#include "model/gemma_lm.h"
+#include "redisxlm.h"
 #include "utils/strings.h"
 
 namespace redisxlm {
@@ -17,66 +16,68 @@ void InferenceChatCmd::_run(RedisModuleCtx* ctx, RedisModuleString** argv, int a
         throw WrongArityError();
     }
 
+    auto* bc = RedisModule_BlockClient(ctx, _reply_func, _timeout_func, _free_func, 0);
+    auto& g_instance = redisxlm::Redisxlm::thread_unsafety_instance();
+    try {
+        g_instance.worker_pool().enqueue(&InferenceChatCmd::_run_block_inference, this, bc, argv,
+                                         argc);
+    } catch (const Error& err) {
+        RedisModule_AbortBlock(bc);
+        RedisModule_ReplyWithError(ctx, err.what());
+    }
+}
+
+void InferenceChatCmd::_run_block_inference(RedisModuleBlockedClient* bc, RedisModuleString** argv,
+                                            int argc) const {
+    assert(bc != nullptr);
     auto prompt_str = redisxlm::utils::to_string(argv[argc - 1]);
     auto c_argv = redisxlm::utils::to_new_char_argv(argv, argc);
-    // auto const_argv = (const char**)c_argv;
-    gcpp::LoaderArgs loader(argc, c_argv);
 
-    // Rough heuristic for the number of threads to use
-    size_t num_threads = static_cast<size_t>(
-        std::clamp(static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
-    hwy::ThreadPool pool(num_threads);
-
-    // Instantiate model and KV Cache
-    gcpp::Gemma model(loader.tokenizer, loader.compressed_weights, loader.ModelType(), pool);
-    auto kv_cache = CreateKVCache(loader.ModelType());
-    size_t pos = 0;  // KV Cache position
-
-    // Initialize random number generator
-    std::mt19937 gen;
-    std::random_device rd;
-    gen.seed(rd());
-
-    // Tokenize instruction
-    std::vector<int> tokens = _tokenize(prompt_str, model.Tokenizer());
-    size_t ntokens = tokens.size();
-
-    std::string res;
-    // This callback function gets invoked everytime a token is generated
-    auto stream_token = [&res, &pos, &ntokens, tokenizer = model.Tokenizer()](int token, float) {
-        ++pos;
-        if (pos < ntokens) {
-            // print feedback
-        } else if (token != gcpp::EOS_ID) {
-            std::string token_text;
-            HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text).ok());
-            res += token_text;
-        }
-        return true;
-    };
-
-    GenerateGemma(
-        model,
-        {.max_tokens = 2048, .max_generated_tokens = 1024, .temperature = 1.0, .verbosity = 0},
-        tokens, /*KV cache position = */ 0, kv_cache, pool, stream_token, gen);
-
-    RedisModule_ReplyWithStringBuffer(ctx, res.data(), res.size());
+    auto result = std::make_unique<AsyncResult>();
+    try {
+        // generate reply
+        redisxlm::model::GemmaModel model;
+        result->output = model.generate(prompt_str, c_argv, argc);
+    } catch (const Error& err) {
+        result->err = err;
+    }
 
     for (int i = 0; i < argc; ++i) {
         delete[] c_argv[i];
     }
     delete[] c_argv;
+
+    RedisModule_UnblockClient(bc, result.release());
 }
 
-std::vector<int> InferenceChatCmd::_tokenize(
-    const std::string& prompt_string,
-    const sentencepiece::SentencePieceProcessor* tokenizer) const {
-    std::string formatted
-        = "<start_of_turn>user\n" + prompt_string + "<end_of_turn>\n<start_of_turn>model\n";
-    std::vector<int> tokens;
-    HWY_ASSERT(tokenizer->Encode(formatted, &tokens).ok());
-    tokens.insert(tokens.begin(), 2);  // BOS token
-    return tokens;
+int InferenceChatCmd::_reply_func(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    auto* res = static_cast<AsyncResult*>(RedisModule_GetBlockedClientPrivateData(ctx));
+    assert(res != nullptr);
+
+    if (!res->err.is_empty()) {
+        return RedisModule_ReplyWithError(ctx, res->err.what());
+    }
+
+    RedisModule_Log(ctx, "debug", "reply res: %s", res->output.data());
+
+    RedisModule_ReplyWithStringBuffer(ctx, res->output.data(), res->output.size());
+    return REDISMODULE_OK;
+}
+
+int InferenceChatCmd::_timeout_func(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    RedisModule_Log(ctx, "debug", "timeout InferenceChatCmd");
+    return RedisModule_ReplyWithNull(ctx);
+}
+
+void InferenceChatCmd::_free_func(RedisModuleCtx* ctx, void* privdata) {
+    REDISMODULE_NOT_USED(ctx);
+    RedisModule_Log(ctx, "debug", "free InferenceChatCmd");
+    auto* result = static_cast<AsyncResult*>(privdata);
+    delete result;
 }
 
 }  // namespace command

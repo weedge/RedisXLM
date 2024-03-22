@@ -4,6 +4,7 @@
 
 #include "command/inference_chat_cmd.h"
 #include "errors.h"
+#include "redisxlm.h"
 
 using namespace redisxlm;
 
@@ -22,6 +23,9 @@ static void create_commands(RedisModuleCtx* ctx) {
 
 static int redisxlmInit(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
     try {
+        auto& g_instance = Redisxlm::thread_unsafety_instance();
+        g_instance.init(ctx, argv, argc);
+
         create_commands(ctx);
     } catch (const Error& e) {
         RedisModule_Log(ctx, "warning", "%s", e.what());

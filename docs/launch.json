@@ -141,9 +141,9 @@
             "request": "launch",
             "program": "${workspaceFolder}/redis/src/redis-server",
             "args": [
-                "--port 6370",
+                "--port 7370",
                 "--loadmodule  ${workspaceFolder}/c++/build/libredisxlm.dylib",
-                "--dbfilename dump.6370.rdb",
+                "--dbfilename dump.7370.rdb",
                 "--loglevel debug",
             ],
             "stopAtEntry": false,

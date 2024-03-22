@@ -6,7 +6,9 @@
 namespace redisxlm {
 class Error : public std::exception {
 public:
-    explicit Error(const std::string& msg) : _msg(msg) {
+    Error() = default;  // eg: for make_unique make default obj unique ptr
+
+    explicit Error(const std::string& msg) : _msg("ERR " + msg) {
     }
 
     Error(const Error&) = default;
@@ -19,6 +21,9 @@ public:
 
     virtual const char* what() const noexcept {
         return _msg.data();
+    }
+    virtual bool is_empty() const noexcept {
+        return _msg.size() == 0;
     }
 
 private:
