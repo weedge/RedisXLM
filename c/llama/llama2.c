@@ -117,8 +117,8 @@ void memory_map_weights(TransformerWeights* w, Config* p, void* ptr,
     w->wcls = shared_classifier ? w->token_embedding_table : fptr;
 }
 
-void read_checkpoint_v1(char* checkpoint, Config* config, TransformerWeights* weights, int* fd,
-                        float** data, ssize_t* file_size) {
+void read_checkpoint_v1(const char* checkpoint, Config* config, TransformerWeights* weights,
+                        int* fd, float** data, ssize_t* file_size) {
     FILE* file = fopen(checkpoint, "rb");
     if (!file) {
         fprintf(stderr, "Couldn't open file %s\n", checkpoint);
@@ -161,7 +161,7 @@ void read_checkpoint_v1(char* checkpoint, Config* config, TransformerWeights* we
     memory_map_weights(weights, config, weights_ptr, config->shared_classifier);
 }
 
-void build_transformer(Transformer* t, char* checkpoint_path) {
+void build_transformer(Transformer* t, const char* checkpoint_path) {
     // read in the Config and the Weights from the checkpoint
     read_checkpoint_v1(checkpoint_path, &t->config, &t->weights, &t->fd, &t->data, &t->file_size);
     // allocate the RunState buffers
@@ -271,7 +271,7 @@ float* forward(Transformer* transformer, int token, int pos) {
     // TransformerBlock * n_layers
     // attention all u need: https://arxiv.org/pdf/1706.03762.pdf
     // see detail
-    for (unsigned long long l = 0; l < p->n_layers; l++) {
+    for (unsigned long long l = 0; (int)l < p->n_layers; l++) {
         // attention rmsnorm
         rmsnorm(s->xb, x, w->rms_att_weight + l * dim, dim);
 
@@ -429,7 +429,7 @@ int compare_tokens(const void* a, const void* b) {
     return strcmp(((TokenIndex*)a)->str, ((TokenIndex*)b)->str);
 }
 
-void build_tokenizer(Tokenizer* t, char* tokenizer_path, int vocab_size) {
+void build_tokenizer(Tokenizer* t, const char* tokenizer_path, int vocab_size) {
     // i should have written the vocab_size into the tokenizer file... sigh
     t->vocab_size = vocab_size;
     // malloc space to hold the scores and the strings
@@ -495,22 +495,28 @@ char* decode(Tokenizer* t, int prev_token, int token) {
     return piece;
 }
 
-void safe_printf(char* piece) {
+void filter_piece(char* piece, int is_print) {
     // piece might be a raw byte token, and we only want to print printable chars or whitespace
     // because some of the other bytes can be various control codes, backspace, etc.
     if (piece == NULL) {
+        piece = "";
         return;
     }
     if (piece[0] == '\0') {
+        piece = "";
         return;
     }
     if (piece[1] == '\0') {
         unsigned char byte_val = piece[0];
         if (!(isprint(byte_val) || isspace(byte_val))) {
+            piece = "";
             return;  // bad byte, don't print it
         }
     }
-    printf("%s", piece);
+    if (is_print) {
+        printf("%s", piece);
+        fflush(stdout);
+    }
 }
 
 int str_lookup(char* str, TokenIndex* sorted_vocab, int vocab_size) {
@@ -523,7 +529,7 @@ int str_lookup(char* str, TokenIndex* sorted_vocab, int vocab_size) {
 // 对文本进行编码 返回:
 // tokens: token 序列 BOS token(=1) 对应文本的 tokenid EOS token(=2)
 // n_tokens: token 序列长度
-void encode(Tokenizer* t, char* text, int8_t bos, int8_t eos, int* tokens, int* n_tokens) {
+void encode(Tokenizer* t, const char* text, int8_t bos, int8_t eos, int* tokens, int* n_tokens) {
     // encode the string text (input) into an upper-bound preallocated tokens[] array
     // bos != 0 means prepend the BOS token (=1), eos != 0 means append the EOS token (=2)
     if (text == NULL) {
@@ -575,7 +581,7 @@ void encode(Tokenizer* t, char* text, int8_t bos, int8_t eos, int* tokens, int* 
     // U+10000	U+10FFFF    11110xxx	10xxxxxx	10xxxxxx	10xxxxxx
 
     // process the raw (UTF-8) byte sequence of the input string
-    for (char* c = text; *c != '\0'; c++) {
+    for (const char* c = text; *c != '\0'; c++) {
         // reset buffer if the current byte is ASCII or a leading byte
         // 0xC0 is 11000000, so (*c & 0xC0) keeps the first 2 bits and zeros the rest
         // 0x80 is 10000000
@@ -607,7 +613,7 @@ void encode(Tokenizer* t, char* text, int8_t bos, int8_t eos, int* tokens, int* 
             // byte_fallback encoding: just encode each byte as a token
             // +3 is here because the first 3 vocab elements are <unk>, <s>, </s>
             // so the individual bytes only start at index 3
-            for (int i = 0; i < str_len; i++) {
+            for (int i = 0; i < (int)str_len; i++) {
                 tokens[(*n_tokens)++] = (unsigned char)str_buffer[i] + 3;
             }
         }
@@ -798,8 +804,8 @@ long time_in_ms() {
     return time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
-void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt,
-              int steps) {
+int generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, const char* prompt,
+             int steps, char* output) {
     char* empty_prompt = "";
     if (prompt == NULL) {
         prompt = empty_prompt;
@@ -811,8 +817,8 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
         = (int*)malloc((strlen(prompt) + 3) * sizeof(int));  // +3 for '\0', ?BOS, ?EOS
     encode(tokenizer, prompt, 1, 0, prompt_tokens, &num_prompt_tokens);
     if (num_prompt_tokens < 1) {
-        fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
-        exit(EXIT_FAILURE);
+        // fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
+        return ERRNO_NUM_PROMPT_TOKENS;
     }
 
     // start the main loop
@@ -841,8 +847,9 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
 
         // print the token as string, decode it with the Tokenizer object
         char* piece = decode(tokenizer, token, next);
-        safe_printf(piece);  // same as printf("%s", piece), but skips "unsafe" bytes
-        fflush(stdout);
+        filter_piece(piece, false);  // same as printf("%s", piece), but skips "unsafe" bytes
+        strcat(output, piece);
+
         token = next;
 
         // init the timer here because the first iteration can be slower
@@ -850,15 +857,19 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
             start = time_in_ms();
         }
     }
-    printf("\n");
+    // printf("\n");
+    strcat(output, "\n");
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
         long end = time_in_ms();
-        fprintf(stderr, "achieved tok/s: %f\n", (pos - 1) / (double)(end - start) * 1000);
+        fprintf(stdout, "prompt: %s , generate achieved tok/s: %f\n", prompt,
+                (pos - 1) / (double)(end - start) * 1000);
     }
 
     free(prompt_tokens);
+
+    return 0;
 }
 
 void read_stdin(const char* guide, char* buffer, size_t bufsize) {
@@ -872,8 +883,8 @@ void read_stdin(const char* guide, char* buffer, size_t bufsize) {
     }
 }
 
-void chat(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* cli_user_prompt,
-          char* cli_system_prompt, int steps) {
+void chat(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler,
+          const char* cli_user_prompt, const char* cli_system_prompt, int steps) {
     // buffers for reading the system prompt and user prompt from stdin
     // you'll notice they are soomewhat haphazardly and unsafely set atm
     char system_prompt[512];
@@ -887,7 +898,7 @@ void chat(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char
     int8_t user_turn = 1;  // user starts
     int next;              // will store the next token in the sequence
     int token;             // stores the current token to feed into the transformer
-    int prev_token;
+    // int prev_token;
     int pos = 0;  // position in the sequence
     while (pos < steps) {
         // when it is the user's turn to contribute tokens to the dialog...
@@ -948,8 +959,7 @@ void chat(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char
         if (user_idx >= num_prompt_tokens && next != 2) {
             // the Assistant is responding, so print its output
             char* piece = decode(tokenizer, token, next);
-            safe_printf(piece);  // same as printf("%s", piece), but skips "unsafe" bytes
-            fflush(stdout);
+            filter_piece(piece, true);  // same as printf("%s", piece), but skips "unsafe" bytes
         }
         if (next == 2) {
             printf("\n");

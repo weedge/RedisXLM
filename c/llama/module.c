@@ -30,11 +30,123 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "cJSON.h"
+#include "llama2.h"
 #include "redisxlm_llama.h"
 
-static int redisxlmLlamaInit(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+typedef struct {
+    float temperature;
+    float topp;
+    int rng_seed;
+    int steps;
+} GenerateParams;
+
+int pase_generate_params(const char* json_string, GenerateParams* param) {
+    cJSON* json = cJSON_Parse(json_string);
+    if (json == NULL) {
+        printf("Error parsing JSON: %s\n", cJSON_GetErrorPtr());
+        return REDISMODULE_ERR;
+    }
+
+    cJSON* temperature = cJSON_GetObjectItemCaseSensitive(json, "temperature");
+    if (temperature) {
+        param->temperature = temperature->valuedouble < 0.0 ? 0.0 : (float)temperature->valuedouble;
+    }
+
+    cJSON* rng_seed = cJSON_GetObjectItemCaseSensitive(json, "rng_seed");
+    if (rng_seed) {
+        param->rng_seed = rng_seed->valueint <= 0 ? (unsigned int)time(NULL) : rng_seed->valueint;
+    }
+
+    cJSON* topp = cJSON_GetObjectItemCaseSensitive(json, "topp");
+    if (topp) {
+        param->topp
+            = (topp->valuedouble < 0.0 || 1.0 < topp->valuedouble) ? 0.9 : (float)topp->valuedouble;
+    }
+
+    cJSON* steps = cJSON_GetObjectItemCaseSensitive(json, "steps");
+    if (steps) {
+        param->steps = steps->valueint <= 0 ? (unsigned int)time(NULL) : steps->valueint;
+    }
+
+    cJSON_Delete(json);
     return REDISMODULE_OK;
 }
+
+/**
+ * @brief
+ * redisxllm.llama2.generate <checkpoint_path> <tokenizer_path> [prompt] [params]
+ *
+ * @param ctx
+ * @param argv
+ * @param argc
+ * @return int
+ */
+int Llama2_Generate_RedisCommand(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+    // 1. parse args
+    if (argc < 3)
+        return RedisModule_WrongArity(ctx);
+
+    size_t m_len;
+    const char* ck_path = RedisModule_StringPtrLen(argv[1], &m_len);
+
+    size_t t_len;
+    const char* tokenizer_path = RedisModule_StringPtrLen(argv[2], &t_len);
+
+    size_t p_len;
+    const char* prompt = "";
+    if (argc >= 3) {
+        prompt = RedisModule_StringPtrLen(argv[3], &p_len);
+    }
+
+    size_t s_len;
+    const char* sample_params_str = "";
+    if (argc >= 4) {
+        sample_params_str = RedisModule_StringPtrLen(argv[4], &s_len);
+    }
+    GenerateParams params;
+    if (pase_generate_params(sample_params_str, &params) == REDISMODULE_ERR) {
+        return RedisModule_ReplyWithError(ctx, "ERR invalid generate params");
+    }
+
+    // 2. generate
+    // build the Transformer via the model .bin file
+    Transformer transformer;
+    build_transformer(&transformer, ck_path);
+    if (params.steps == 0 || params.steps > transformer.config.seq_len)
+        params.steps = transformer.config.seq_len;  // ovrerride to ~max length
+
+    // build the Tokenizer via the tokenizer .bin file
+    Tokenizer tokenizer;
+    build_tokenizer(&tokenizer, tokenizer_path, transformer.config.vocab_size);
+
+    // build the Sampler
+    Sampler sampler;
+    build_sampler(&sampler, transformer.config.vocab_size, params.temperature, params.topp,
+                  params.rng_seed);
+
+    char* output = RedisModule_Alloc(sizeof(char) * transformer.config.seq_len);
+    if (generate(&transformer, &tokenizer, &sampler, prompt, params.steps, output)
+        == ERRNO_NUM_PROMPT_TOKENS) {
+        return RedisModule_ReplyWithSimpleString(ctx, ERR_STR_NUM_PROMPT_TOKENS);
+    }
+    RedisModule_Log(ctx, "debug", "generate output len: %lu ", strlen(output));
+
+    // memory and file handles cleanup
+    free_sampler(&sampler);
+    free_tokenizer(&tokenizer);
+    free_transformer(&transformer);
+
+    return RedisModule_ReplyWithStringBuffer(ctx, output, strlen(output));
+}
+
+static int redisxlmLlamaInit(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
+    REDISMODULE_NOT_USED(ctx);
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    return REDISMODULE_OK;
+}
+
 /* This function must be present on each Redis module. It is used in
  * order to register the commands into the Redis server.
  *  __attribute__((visibility("default"))) for the same func name with redis
@@ -58,6 +170,11 @@ RedisModule_OnLoad(RedisModuleCtx* ctx, RedisModuleString** argv, int argc) {
         printf("redisxlmLlamaInit fail! \n");
         return REDISMODULE_ERR;
     }
+
+    if (RedisModule_CreateCommand(ctx, "redisxllm.llama2.generate", Llama2_Generate_RedisCommand,
+                                  "", 0, 0, 0)
+        == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
 
     return REDISMODULE_OK;
 }

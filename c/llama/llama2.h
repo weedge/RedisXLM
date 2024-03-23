@@ -44,6 +44,18 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+// -------------------------------------------------
+// defined vars
+
+// boolean
+#define true 1
+#define false 0
+
+// errno
+#define ERRNO_NUM_PROMPT_TOKENS 1
+#define ERR_STR_NUM_PROMPT_TOKENS "something is wrong, expected at least 1 prompt token"
+
 // ----------------------------------------------------------------------------
 // Transformer model
 
@@ -150,19 +162,77 @@ typedef struct {
 // -----------------------------------------------------------------------------
 // declare api function
 
-/*
- * chat loop
- * I manually inspected the tokens for a few chat conversations compared to
- * python reference and that seemed ok, but this was not thoroughly tested and
- * is not safely implemented, it's more a proof of concept atm.
+/**
+ * @brief
+ * construct transformer inference model
+ *
+ * @param t
+ * @param checkpoint_path
  */
-void chat(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* cli_user_prompt,
-          char* cli_system_prompt, int steps);
-/*
+void build_transformer(Transformer* t, const char* checkpoint_path);
+
+/**
+ * @brief
+ * construct tokenizer
+ *
+ * @param t
+ * @param tokenizer_path
+ * @param vocab_size
+ */
+void build_tokenizer(Tokenizer* t, const char* tokenizer_path, int vocab_size);
+
+/**
+ * @brief
+ * construct sampler
+ *
+ * @param sampler
+ * @param vocab_size
+ * @param temperature
+ * @param topp
+ * @param rng_seed
+ */
+void build_sampler(Sampler* sampler, int vocab_size, float temperature, float topp,
+                   unsigned long long rng_seed);
+
+/**
+ * @brief
  * generation loop
  * https://huggingface.co/blog/how-to-generate
  * https://colab.research.google.com/drive/14kMyF1nDvjP1mA86Yd1xkGCaqA-c4xVy?usp=sharing
+ *
+ * @param transformer
+ * @param tokenizer
+ * @param sampler
+ * @param prompt
+ * @param steps
+ * @param output
+ * @return int 0 is ok, else err_no
  */
-void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt,
-              int steps);
+int generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, const char* prompt,
+             int steps, char* output);
+
+/**
+ * @brief
+ * free sampler
+ *
+ * @param sampler
+ */
+void free_sampler(Sampler* sampler);
+
+/**
+ * @brief
+ * free tokenizer
+ *
+ * @param t
+ */
+void free_tokenizer(Tokenizer* t);
+
+/**
+ * @brief
+ * free transformer
+ *
+ * @param t
+ */
+void free_transformer(Transformer* t);
+
 #endif

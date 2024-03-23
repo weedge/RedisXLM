@@ -63,8 +63,6 @@
 #define REDIS_MGRT_CMD_PARAMS_SIZE 1024 * 1024  // send redis cmd params size
 #define MAX_NUM_THREADS 128
 #define REDISXLM_LLAMA_APIVER_1 1
-/* redis version */
-#define REDIS_VERSION 60000 /*6.0.0*/
 /* REDISXLM_LLAMA version for linker */
 #define REDISXLM_LLAMA_MAJOR 0
 #define REDISXLM_LLAMA_MINOR 1

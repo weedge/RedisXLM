@@ -10,3 +10,6 @@
 [submodule "c++/deps/gemma"]
 	path = c++/deps/gemma
 	url = https://github.com/google/gemma.cpp.git
+[submodule "c/deps/cjson"]
+	path = c/deps/cjson
+	url = https://github.com/DaveGamble/cJSON.git

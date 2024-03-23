@@ -1,4 +1,4 @@
-# ReidsXSlot Makefile
+# Reidsxlm Makefile
 # Copyright (C) 2024- weedge <weege007 at gmail dot com>
 # This file is released under the MIT license, see the LICENSE file
 
@@ -23,6 +23,10 @@ SDK_LDFLAGS ?= -L$(SDK_DIR)/rmutil -lrmutil
 # threadpool
 THREADPOOL_DIR = ${SOURCEDIR}/../deps/threadpool
 THREADPOOL_CFLAGS ?= -I$(THREADPOOL_DIR)
+
+# cjson
+CJSON_DIR = ${SOURCEDIR}/../deps/cjson
+CJSON_CFLAGS ?= -I$(CJSON_DIR)
 
 # redis data struct
 DS_DIR = ${SOURCEDIR}/../deps/ds
@@ -86,19 +90,20 @@ endif
 .SUFFIXES: .c .so .xo .o
 CC_SOURCES = $(wildcard $(SOURCEDIR)/*.c) \
 	$(wildcard $(THREADPOOL_DIR)/thpool.c) \
+	$(wildcard $(CJSON_DIR)/cJSON.c) \
 	$(wildcard $(DS_DIR)/*.c) 
 CC_OBJECTS = $(sort $(patsubst %.c, %.o, $(CC_SOURCES)))
 
 
-all: init ${THREADPOOL_DIR}/thpool.o redisxlm_llama.so ldd_so
+all: init ${THREADPOOL_DIR}/thpool.o ${CJSON_DIR}/cJSON.o redisxlm_llama.so ldd_so
 
 help:
-	@echo -e "please choose make with below env params:\n"
-	@echo "BUILD_TYPE={Debug or Release} default Debug"
-	@echo "ENABLE_SANITIZE={YES or NO} default NO"
-	@echo "RM_INCLUDE_DIR={redis_absolute_path}/src, include redismodule.h"
-	@echo "REDIS_VERSION=6000, default 6000(6.0.0), use 70200(7.2.0) inlcude 7.2.0+ redismodule.h to use feature api"
-	@echo -e "\nhave fun :)"
+	@echo "please choose make with below env params:\n"
+	@echo "- BUILD_TYPE={Debug or Release} default Debug"
+	@echo "- ENABLE_SANITIZE={YES or NO} default NO"
+	@echo "- RM_INCLUDE_DIR={redis_absolute_path}/src, include redismodule.h"
+	@echo "- REDIS_VERSION=6000, default 6000(6.0.0), use 70200(7.2.0) inlcude 7.2.0+ redismodule.h to use feature api"
+	@echo "\nhave fun :)"
 
 init:
 	@git submodule init
@@ -109,14 +114,20 @@ ${THREADPOOL_DIR}/thpool.o: ${THREADPOOL_DIR}/thpool.c
 	$(CC) -c -o $@ $(SHOBJ_CFLAGS) \
 	$<
 
+${CJSON_DIR}/cJSON.o: ${CJSON_DIR}/cJSON.c
+	$(CC) -c -o $@ $(SHOBJ_CFLAGS) \
+	$<
+
 ${SOURCEDIR}/module.o: ${SOURCEDIR}/module.c
 	$(CC) -c -o $@ $(SHOBJ_CFLAGS) $(DS_CFLAGS) \
 	$(THREADPOOL_CFLAGS) \
+	$(CJSON_CFLAGS) \
 	$< 
 
 ${SOURCEDIR}/redisxlm_llama.o: ${SOURCEDIR}/REDISXLM_LLAMA.c
 	$(CC) -c -o $@ $(SHOBJ_CFLAGS) $(DS_CFLAGS) \
 	$(THREADPOOL_CFLAGS) \
+	$(CJSON_CFLAGS) \
 	$<
 
 %.o: %.c
@@ -143,6 +154,7 @@ clean:
 	cd $(SOURCEDIR) && rm -rvf *.xo *.so *.o *.a
 	cd $(DS_DIR) && rm -rvf *.xo *.so *.o *.a
 	cd $(THREADPOOL_DIR) && rm -rvf *.xo *.so *.o *.a
+	cd $(CJSON_DIR) && rm -rvf *.xo *.so *.o *.a
 	cd $(SDK_DIR)/rmutil && make clean 
 	rm -rvf $(SOURCEDIR)/redisxlm_llama.so.$(REDISXLM_LLAMA_SONAME)
 	rm -rvf $(SOURCEDIR)/redisxlm_llama.dylib.$(REDISXLM_LLAMA_SONAME)
