@@ -1,3 +1,32 @@
+/*
+ * Copyright (c) 2024, weedge <weege007 at gmail dot com>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   * Neither the name of Redis nor the names of its contributors may be used
+ *     to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 use lazy_static::lazy_static;
 use llama_cpp::standard_sampler::{SamplerStage, StandardSampler};
 use llama_cpp::{EmbeddingsParams, LlamaModel, LlamaParams, SessionParams, SplitMode};
@@ -5,8 +34,8 @@ use num_cpus;
 use rayon::{self};
 use redis_module::logging::log_debug;
 use redis_module::{
-    redis_module, Context, NextArg, RedisError, RedisResult, RedisString, RedisValue, Status,
-    ThreadSafeContext,
+    redis_module, BlockedClient, Context, ContextGuard, NextArg, RedisError, RedisResult,
+    RedisString, RedisValue, Status, ThreadSafeContext,
 };
 use serde_json;
 use std::borrow::BorrowMut;
@@ -224,11 +253,14 @@ fn create_inference(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn start_completing_with(
+    ctx: &ContextGuard,
     model_name: &str,
     _model: &LlamaModel,
     _prompts: &Vec<String>,
     _sample_params: &SampleParams,
     out_put: &mut String,
+    pub_channel: &str,
+    _stream_key: &str,
 ) -> Option<RedisError> {
     // use default session params
     // todo: create session redis type
@@ -265,16 +297,25 @@ fn start_completing_with(
     } else if _sample_params.token_selector == "greedy" {
         sampler = StandardSampler::new_greedy();
     }
-    // `session.start_completing_with` creates a worker thread that generates tokens. When the completion
+    // `session.start_completing_with` creates a worker thread that generates tokens. When the piece
     // handle is dropped, tokens stop generating!
-    let completions = session
+    let pieces = session
         .start_completing_with(sampler, _sample_params.max_tokens)
         .into_strings();
 
     let mut decoded_tokens = 0;
-    for completion in completions {
-        log_debug(format!("{completion}"));
-        out_put.push_str(completion.as_str());
+    for piece in pieces {
+        log_debug(format!("{piece}"));
+        if pub_channel.is_empty() && _stream_key.is_empty() {
+            out_put.push_str(piece.as_str());
+        } else {
+            if !pub_channel.is_empty() {
+                pub_completion(&ctx, pub_channel.to_string(), piece.clone());
+            }
+            if !_stream_key.is_empty() {
+                __add_pieces_stream(&ctx, _stream_key.to_string(), vec![piece], true);
+            }
+        }
         decoded_tokens += 1;
         if decoded_tokens > _sample_params.max_tokens {
             break;
@@ -284,10 +325,75 @@ fn start_completing_with(
     return None;
 }
 
+/// add pieces to stream
+/// just a Experiment
+fn __add_pieces_stream(
+    ctx: &Context,
+    stream_key: String,
+    pieces: Vec<String>,
+    is_async_call: bool,
+) {
+    if is_async_call {
+        //let stream_id_owned = stream_key.to_owned(); // &str to String
+        //let piece_owned = piece.to_owned(); // &str to String
+        let _ = ctx.add_post_notification_job(move |ctx| {
+            // it is not safe to write inside the notification callback itself.
+            // So we perform the write on a post job notificaiton.
+            // Event notification mechanism like epoll/kqueue
+            _add_pieces_stream(ctx, stream_key, pieces);
+        });
+    } else {
+        _add_pieces_stream(ctx, stream_key, pieces);
+    }
+}
+
+fn _add_pieces_stream(ctx: &Context, stream_key: String, pieces: Vec<String>) {
+    let mut args = vec![stream_key.as_str(), "*"];
+    args.extend(pieces.iter().map(|s| s.as_str()));
+    match ctx.call("XADD", &*args) {
+        Err(e) => {
+            ctx.log_warning(&format!("xadd {:?} , ERROR: {}", args, e));
+        }
+        Ok(res) => match res {
+            RedisValue::SimpleString(v) => {
+                ctx.log_debug(&format!("xadd {:?} , RES: {}", args, v));
+            }
+            RedisValue::StringBuffer(v) => {
+                ctx.log_debug(&format!("xadd {:?} , RES: {:?}", args, v));
+            }
+            _ => {
+                ctx.log_warning(&format!("xadd {:?} , RES not string", args));
+            }
+        },
+    }
+}
+
+fn pub_completion(ctx: &Context, pub_channel: String, piece: String) {
+    let args = vec![pub_channel.as_str(), piece.as_str()];
+    match ctx.call("PUBLISH", &*args) {
+        Err(e) => {
+            ctx.log_warning(&format!("publish {:?} , ERROR: {}", args, e));
+        }
+        Ok(res) => match res {
+            RedisValue::Integer(v) => {
+                let mut msg = format!("publish {:?} , RES: {}", args, v);
+                if v == 0 {
+                    msg += " no subscribers";
+                }
+                ctx.log_debug(&msg);
+            }
+            _ => {
+                ctx.log_warning(&format!("publish {:?} , RES not integer", args));
+            }
+        },
+    }
+}
+
 // LLAMACPP.INFERENCE_CHAT hello_world_infer
 // LLAMACPP.INFERENCE_CHAT hello_world_infer --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min-p": 0.1}'
 // LLAMACPP.INFERENCE_CHAT assistant_tpl_infer --vars '{"system": "hello", "user": "world"}'
 // LLAMACPP.INFERENCE_CHAT assistant_tpl_infer --vars '{"system": "hello", "user": "world"}' --sample_params '{"top_k":40,"top_p": 9.5,"temperature":0.8","min_p": 0.1,"max_tokens":1024}'
+// LLAMACPP.INFERENCE_CHAT hello_world_infer --pub "${PUB_CHANNEL_NAME}"
 /*
  --top-k N             top-k sampling (default: 40, 0 = disabled)
  --top-p N             top-p sampling (default: 0.9, 1.0 = disabled)
@@ -304,6 +410,8 @@ fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut tpl_vars = HashMap::<String, String>::default();
     let mut is_tpl_vars = false;
     let mut sample_params = SampleParams::default();
+    let mut pub_channel = "";
+    let mut _stream_key = "";
     while let Ok(p) = args.next_string() {
         if p.to_lowercase() == "--vars" {
             let tpl_vars_json_str = args.next_str()?;
@@ -313,6 +421,12 @@ fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         if p.to_lowercase() == "--sample_params" {
             let sample_json_str = args.next_str()?;
             sample_params = serde_json::from_str(&sample_json_str)?;
+        }
+        if p.to_lowercase() == "--pub" {
+            pub_channel = args.next_str()?.trim();
+        }
+        if p.to_lowercase() == "--stream" {
+            _stream_key = args.next_str()?.trim();
         }
     }
 
@@ -383,18 +497,24 @@ fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 
                         let mut out_put = String::new();
                         let res = start_completing_with(
+                            &ctx,
                             model_val.name.as_str(),
                             &llama_model.deref(),
                             &promts,
                             &sample_params,
                             &mut out_put,
+                            pub_channel,
+                            _stream_key,
                         );
                         if res.is_some() {
                             thread_ctx.reply(Err(res.unwrap()));
                             return;
                         }
-                        // todo: use stream chat, need redis stream (init chat pipline by client with limit_num)
-                        thread_ctx.reply(Ok(out_put.into()));
+                        if pub_channel.is_empty() && _stream_key.is_empty() {
+                            thread_ctx.reply(Ok(out_put.into()));
+                        } else {
+                            thread_ctx.reply(Ok("".into()));
+                        }
                     });
             }
         }
@@ -404,9 +524,12 @@ fn inference_chat(_ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn start_completing(
+    thread_ctx: &ThreadSafeContext<BlockedClient>,
     model: &str,
     prompts: &Vec<String>,
     out_put: &mut String,
+    pub_channel: &str,
+    _stream_key: &str,
 ) -> Option<RedisError> {
     let res = LlamaModel::load_from_file(model, LlamaParams::default());
     if res.is_err() {
@@ -432,15 +555,26 @@ fn start_completing(
     let max_tokens = 1024;
     let mut decoded_tokens = 0;
 
-    // `session.start_completing_with` creates a worker thread that generates tokens. When the completion
+    // `session.start_completing_with` creates a worker thread that generates tokens. When the piece
     // handle is dropped, tokens stop generating!
-    let completions = session
+    let pieces = session
         .start_completing_with(StandardSampler::default(), max_tokens)
         .into_strings();
 
-    for completion in completions {
-        log_debug(format!("{completion}"));
-        out_put.push_str(completion.as_str());
+    for piece in pieces {
+        log_debug(format!("{piece}"));
+        if pub_channel.is_empty() && _stream_key.is_empty() {
+            out_put.push_str(piece.as_str());
+        } else {
+            let ctx = thread_ctx.lock();
+            if !pub_channel.is_empty() {
+                pub_completion(&ctx, pub_channel.to_string(), piece.clone());
+            }
+            if !_stream_key.is_empty() {
+                __add_pieces_stream(&ctx, _stream_key.to_string(), vec![piece], true);
+            }
+            drop(ctx);
+        }
         decoded_tokens += 1;
         if decoded_tokens > max_tokens {
             break;
@@ -452,6 +586,7 @@ fn start_completing(
 
 // LLAMACPP.ASYNC_INFERENCE_CHAT_MODEL "${MODEL_PATH}/neural-chat-7b-v3-3.Q4_K_M.gguf" "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>"
 // LLAMACPP.ASYNC_INFERENCE_CHAT_MODEL "${MODEL_PATH}/qwen1_5-0_5b-chat-q8_0.gguf" "<|im_start|>system\nYou are a helpful assistant.<|im_end|>" "<|im_start|>user" "hello" "<|im_end|>" "<|im_start|>assistant"
+// LLAMACPP.ASYNC_INFERENCE_CHAT_MODEL "${MODEL_PATH}/neural-chat-7b-v3-3.Q4_K_M.gguf" "<|SYSTEM|>You are a helpful assistant." "<|USER|>Hello!" "<|ASSISTANT|>" --pub "${PUB_CHANNEL}"
 fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     ctx.log_debug(format!("async_block_inference_chat args:{:?}", args).as_str());
     if args.len() < 3 {
@@ -460,9 +595,17 @@ fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisRes
     let mut args = args.into_iter().skip(1);
     let model = args.next_str()?;
 
+    let mut pub_channel = "";
+    let mut _stream_key = "";
     let mut prompts = Vec::new();
     while let Ok(p) = args.next_string() {
-        prompts.push(p);
+        if p.to_lowercase() == "--pub" {
+            pub_channel = args.next_str()?.trim();
+        } else if p.to_lowercase() == "--stream" {
+            _stream_key = args.next_str()?.trim();
+        } else if !p.contains("--") {
+            prompts.push(p);
+        }
     }
 
     let blocked_client = ctx.block_client();
@@ -478,13 +621,24 @@ fn async_block_inference_chat(ctx: &Context, args: Vec<RedisString>) -> RedisRes
                 ));
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
                 let mut out_put = String::new();
-                let res = start_completing(model, &prompts, &mut out_put);
+                let res = start_completing(
+                    &thread_ctx,
+                    model,
+                    &prompts,
+                    &mut out_put,
+                    pub_channel,
+                    _stream_key,
+                );
                 if res.is_some() {
                     thread_ctx.reply(Err(res.unwrap()));
                     return;
                 }
-                // todo: use stream chat, need redis stream (init chat pipline by client with limit_num)
-                thread_ctx.reply(Ok(out_put.into()));
+
+                if pub_channel.is_empty() {
+                    thread_ctx.reply(Ok(out_put.into()));
+                } else {
+                    thread_ctx.reply(Ok("".into()));
+                }
             });
     }
 

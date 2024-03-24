@@ -8,7 +8,7 @@
 
 - redis x language model (load pre-trained model, instruction-tuned model); size (tiny|t, small|s, medium|m, large|l) with quantization;
 
-- Load model types：
+- Load model types：(text)
    1. embedding model
    2. generation(inference) model
 
