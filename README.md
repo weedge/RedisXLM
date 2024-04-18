@@ -13,11 +13,12 @@
    2. generation(inference) model
 
 - Third-party open source libraries used:
-  1. https://github.com/karpathy/llama2.c (simple, inference Llama 2 in one file of pure C) 
-  2. https://github.com/ggerganov/llama.cpp (Integrated nearly all open-source LLMs, including the following open-source LLMs)
-  3. https://github.com/google/gemma.cpp (Google's open-source LLM)
+  1. [done] https://github.com/karpathy/llama2.c (simple, inference Llama 2 in one file of pure C) 
+  2. [done] https://github.com/ggerganov/llama.cpp (Integrated nearly all open-source LLMs, including the following open-source LLMs)
+  3. [done] https://github.com/google/gemma.cpp (Google's open-source LLM)
   4. https://github.com/li-plus/chatglm.cpp (LLM open-sourced by the Tsinghua University community)
   5. https://github.com/QwenLM/qwen.cpp (Similar to chatglm, LLM open-sourced by Alibaba)
+  6. [todo] https://github.com/microsoft/onnxruntime/tree/main/rust (use onnxruntime to load small model to inference on the edge)
 
 ## Cases
 
